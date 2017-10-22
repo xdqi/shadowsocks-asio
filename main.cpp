@@ -146,10 +146,10 @@ private:
     boost::asio::async_read(client_socket_, boost::asio::buffer(client_data_, read_len),
       [this, self](const boost::system::error_code& read_error_code, std::size_t length) {
         if (read_error_code) {
-          std::cerr << "from ss-server async_read_some: " << read_error_code.message() << std::endl;
+          std::cerr << "from ss-server async_read: " << read_error_code.message() << std::endl;
           return;
         }
-        fprintf(stderr, "Read from ss-server\n");
+        fprintf(stderr, "Read from ss-server %zu bytes\n", length);
         switch (shadowsocks_status_) {
           case Shadowsocks::SHADOWSOCKS_NEW: {
             memcpy(client_salt_, client_data_, length);
@@ -281,12 +281,13 @@ private:
 
   void read_some_from_socks5_client(size_t read_len) {
     auto self(shared_from_this());
-    boost::asio::async_read(server_socket_, boost::asio::buffer(server_data_, read_len),
+    server_socket_.async_read_some(boost::asio::buffer(server_data_, read_len),
       [this, self](const boost::system::error_code& read_error_code, std::size_t length) {
         if (read_error_code) {
           std::cerr << "from client async_read_some: " << read_error_code.message() << std::endl;
           return;
         }
+        fprintf(stderr, "async_read_some Received %zu bytes from client\n", length);
         send_to_ss_server(server_data_, length, [=] {
           read_some_from_socks5_client(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
         });
@@ -408,6 +409,7 @@ private:
                         std::cerr << "to client async_write: SOCKS5 close failed "
                                   << write_error_code.message() << std::endl;
                       }
+                      fprintf(stderr, "Session connected to server\n");
                       // server_socket_.close(); // TODO: remove it.
                       // TODO: set up another function to read user data
                       read_some_from_socks5_client(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
