@@ -61,6 +61,12 @@ namespace Shadowsocks {
     SHADOWSOCKS_AEAD_LENGTH_LENGTH = 2,
     SHADOWSOCKS_AEAD_TAG_LENGTH = 16
   };
+
+  enum status {
+    SHADOWSOCKS_NEW,
+    SHADOWSOCKS_WAIT_LENGTH,
+    SHADOWSOCKS_WAIT_PAYLOAD
+  };
 }
 
 class session : public std::enable_shared_from_this<session> {
@@ -71,7 +77,8 @@ public:
       client_socket_(io_service),
       resolver_(io_service),
       query_(server_host, server_port),
-      status_(Socks5::SOCKS_NEW),
+      socks_status_(Socks5::SOCKS_NEW),
+      shadowsocks_status_(Shadowsocks::SHADOWSOCKS_NEW),
       server_data_{0},
       client_data_{0},
       ss_target_address{0},
@@ -91,13 +98,16 @@ private:
   tcp::resolver resolver_;
   tcp::resolver::query query_;
 
-  enum Socks5::status status_;
+  enum Socks5::status socks_status_;
+  enum Shadowsocks::status shadowsocks_status_;
 
   uint8_t server_data_[Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH];
   uint8_t client_data_[Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH];
   uint8_t ss_target_address[Shadowsocks::SHADOWSOCKS_HEADER_MAX_LENGTH];
-  uint8_t salt[32];
-  uint8_t key[32];
+  uint8_t server_salt_[32];
+  uint8_t server_key_[32];
+  uint8_t client_salt_[32];
+  uint8_t client_key_[32];
   int ss_target_written = 0;
   uint64_t nonce_send[2];
   uint64_t nonce_recv[2];
@@ -112,17 +122,19 @@ private:
   void connect_to_ss_server(std::function<void ()> callback) {
     auto self(shared_from_this());
     resolver_.async_resolve(query_,
-      [this, self, callback](const boost::system::error_code& ec, tcp::resolver::iterator iter) {
-        if (ec) {
-          std::cerr << "to ss-server async_resolve: " << ec.message() << std::endl;
+      [this, self, callback](const boost::system::error_code& resolve_error_code, tcp::resolver::iterator iter) {
+        if (resolve_error_code) {
+          std::cerr << "to ss-server async_resolve: " << resolve_error_code.message() << std::endl;
           return;
         }
         boost::asio::async_connect(client_socket_, iter,
-          [this, self, callback](const boost::system::error_code& ec, tcp::resolver::iterator) {
-            if (ec) {
-              std::cerr << "to ss-server async_connect: " << ec.message() << std::endl;
+          [this, self, callback](const boost::system::error_code& connect_error_code, tcp::resolver::iterator) {
+            if (connect_error_code) {
+              std::cerr << "to ss-server async_connect: " << connect_error_code.message() << std::endl;
               return;
             }
+            fprintf(stderr, "connected to ss-server\n");
+            read_from_ss_server(32); // TODO: salt length
             init_connection_with_ss_server(callback);
         });
       });
@@ -137,32 +149,72 @@ private:
           std::cerr << "from ss-server async_read_some: " << read_error_code.message() << std::endl;
           return;
         }
-        boost::asio::async_write(server_socket_, boost::asio::buffer(client_data_, length),
-          [this, self](const boost::system::error_code& write_error_code, std::size_t) {
-            if (write_error_code) {
-              std::cerr << "to client async_write: " << write_error_code.message() << std::endl;
+        fprintf(stderr, "Read from ss-server\n");
+        switch (shadowsocks_status_) {
+          case Shadowsocks::SHADOWSOCKS_NEW: {
+            memcpy(client_salt_, client_data_, length);
+            auto base_key = password_to_key((uint8_t *)"233", 3, 32);
+            auto new_key = hkdf_sha1(base_key.data(), 32, client_salt_, sizeof client_salt_, (uint8_t *) "ss-subkey", 9, 32);
+            memcpy(client_key_, new_key.data(), 32);
+            shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_LENGTH;
+            read_from_ss_server(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + crypto_aead_chacha20poly1305_IETF_ABYTES);
+          }
+            return;
+          case Shadowsocks::SHADOWSOCKS_WAIT_LENGTH: {
+            uint16_t payload_length;
+            unsigned long long payload_length_len;
+            if (crypto_aead_chacha20poly1305_ietf_decrypt((uint8_t *)&payload_length, &payload_length_len, nullptr, client_data_, length, nullptr, 0, (uint8_t *)&nonce_recv, client_key_) != 0) {
+              std::cerr << "read_from_ss_server length decryption failed" << std::endl;
+              // TODO: fail it
               return;
             }
-            read_from_ss_server(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
+            nonce_recv[0]++;
+            std::cerr << "read_from_ss_server payload length: " << ntohs(payload_length) << std::endl;
+            shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_PAYLOAD;
+            read_from_ss_server(ntohs(payload_length) + crypto_aead_chacha20poly1305_IETF_ABYTES);
           }
-        );
+            return;
+          case Shadowsocks::SHADOWSOCKS_WAIT_PAYLOAD: {
+            uint8_t data[length];
+            unsigned long long payload_length = length;
+            if (crypto_aead_chacha20poly1305_ietf_decrypt(data, &payload_length, nullptr, client_data_, length, nullptr, 0, (uint8_t *)&nonce_recv, client_key_) != 0) {
+              std::cerr << "read_from_ss_server content decryption failed" << std::endl;
+              // TODO: fail it
+              return;
+            }
+            nonce_recv[0]++;
+            std::cerr << "read_from_ss_server payload:" << data << std::endl;
+            shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_LENGTH;
+
+            boost::asio::async_write(server_socket_, boost::asio::buffer(data, length),
+              [this, self](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
+                if (write_error_code) {
+                  std::cerr << "to server async_write: " << write_error_code.message() << std::endl;
+                  return;
+                }
+                read_from_ss_server(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + crypto_aead_chacha20poly1305_IETF_ABYTES);
+              }
+            );
+          }
+            return;
+        }
       }
     );
   }
 
   void init_connection_with_ss_server(std::function<void ()> callback) {
     auto self(shared_from_this());
-    if (!RAND_bytes(salt, sizeof salt)) {
-      fprintf(stderr, "salt generation failed\n");
+    if (!RAND_bytes(server_salt_, sizeof server_salt_)) {
+      fprintf(stderr, "server_salt_ generation failed\n");
       return;
     }
-    //memset(salt, 32, 1);
+    //memset(server_salt_, 32, 1);
 
     auto base_key = password_to_key((uint8_t *)"233", 3, 32);
 
-    auto new_key = hkdf_sha1(base_key.data(), 32, salt, sizeof salt, (uint8_t *) "ss-subkey", 9, 32);
-    memcpy(key, new_key.data(), 32);
-    boost::asio::async_write(client_socket_, boost::asio::buffer(salt, sizeof salt),
+    auto new_key = hkdf_sha1(base_key.data(), 32, server_salt_, sizeof server_salt_, (uint8_t *) "ss-subkey", 9, 32);
+    memcpy(server_key_, new_key.data(), 32);
+    boost::asio::async_write(client_socket_, boost::asio::buffer(server_salt_, sizeof server_salt_),
       [this, self, callback](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
         if (write_error_code) {
           std::cerr << "to server async_write: " << write_error_code.message() << std::endl;
@@ -182,7 +234,7 @@ private:
     crypto_aead_chacha20poly1305_ietf_encrypt(len_ciphertext, &len_len,
                                               (uint8_t *)&len_short, 2,
                                               nullptr, 0,
-                                              nullptr, (uint8_t *)&nonce_send, key);
+                                              nullptr, (uint8_t *)&nonce_send, server_key_);
     for (int i = 0; i < 12; i++) {
       fprintf(stderr, "%02x ", ((uint8_t *)&nonce_send)[i]);
     }
@@ -195,7 +247,7 @@ private:
     crypto_aead_chacha20poly1305_ietf_encrypt(data_ciphertext, &data_len,
                                               content, length,
                                               nullptr, 0,
-                                              nullptr, (uint8_t *)&nonce_send, key);
+                                              nullptr, (uint8_t *)&nonce_send, server_key_);
 
     fprintf(stderr, "out ciphertext: ");
     for (int i = 0; i < data_len; i++) {
@@ -205,7 +257,7 @@ private:
 
     unsigned long long tmp_len = length;
     uint8_t tmp_txt[length];
-    if (crypto_aead_chacha20poly1305_ietf_decrypt(tmp_txt, &tmp_len, nullptr, data_ciphertext, data_len, nullptr, 0, (uint8_t *)&nonce_send, key) != 0) {
+    if (crypto_aead_chacha20poly1305_ietf_decrypt(tmp_txt, &tmp_len, nullptr, data_ciphertext, data_len, nullptr, 0, (uint8_t *)&nonce_send, server_key_) != 0) {
       std::cerr << "wtf, chuang si wo li,,," << std::endl;
     } else {
       std::cerr << "wtf, mei wen ti a,,," << std::endl;
@@ -250,7 +302,7 @@ private:
           std::cerr << "from client async_read: " << read_error_code.message() << std::endl;
           return;
         }
-        switch (status_) {
+        switch (socks_status_) {
           case Socks5::SOCKS_NEW: {
             if (memcmp(server_data_, Socks5::client_hello, sizeof(Socks5::client_hello)) == 0) {
               boost::asio::async_write(server_socket_, boost::asio::buffer(Socks5::server_hello, sizeof(Socks5::server_hello)),
@@ -259,7 +311,7 @@ private:
                     std::cerr << "to client async_write: SOCKS5 handshake failed " << write_error_code.message() << std::endl;
                     return;
                   }
-                  status_ = Socks5::SOCKS_WAIT_REQUEST;
+                  socks_status_ = Socks5::SOCKS_WAIT_REQUEST;
                   read_from_socks5_client(Socks5::SOCKS_LENGTH_REQUEST_UNTIL_ATYP);
                 }
               );
@@ -305,7 +357,7 @@ private:
                   return;
               }
               ss_target_address[ss_target_written++] = server_data_[3];
-              status_ = Socks5::SOCKS_WAIT_DSTADDR;
+              socks_status_ = Socks5::SOCKS_WAIT_DSTADDR;
               read_from_socks5_client(ss_header_length);
               return;
             } else {
@@ -315,11 +367,11 @@ private:
             return;
           case Socks5::SOCKS_WAIT_DSTADDR: {
             if (ss_target_address[0] == Socks5::SOCKS_ADDR_DOMAIN) {
-              status_ = Socks5::SOCKS_WAIT_DOMAIN;
+              socks_status_ = Socks5::SOCKS_WAIT_DOMAIN;
               ss_target_address[ss_target_written++] = server_data_[0];
               read_from_socks5_client(server_data_[0]);
             } else {
-              status_ = Socks5::SOCKS_WAIT_DSTPORT;
+              socks_status_ = Socks5::SOCKS_WAIT_DSTPORT;
               memcpy(ss_target_address + ss_target_written, server_data_, length);
               ss_target_written += length;
               read_from_socks5_client(Socks5::SOCKS_LENGTH_PORT);
@@ -327,7 +379,7 @@ private:
           }
             return;
           case Socks5::SOCKS_WAIT_DOMAIN: {
-            status_ = Socks5::SOCKS_WAIT_DSTPORT;
+            socks_status_ = Socks5::SOCKS_WAIT_DSTPORT;
             memcpy(ss_target_address + ss_target_written, server_data_, length);
             std::cerr << "Received connection to domain " << reinterpret_cast<const char *>(server_data_) << std::endl;
             ss_target_written += length;
@@ -335,7 +387,7 @@ private:
           }
             return;
           case Socks5::SOCKS_WAIT_DSTPORT: {
-            status_ = Socks5::SOCKS_ESTABLISHED;
+            socks_status_ = Socks5::SOCKS_ESTABLISHED;
             memcpy(ss_target_address + ss_target_written, server_data_, length);
             std::cerr << "Received connection to port " << htons(*reinterpret_cast<const uint16_t *>(server_data_)) << std::endl;
             ss_target_written += length;
@@ -368,7 +420,7 @@ private:
             return;
           case Socks5::SOCKS_ESTABLISHED:
           default:
-            std::cerr << "read_from_socks5_client: unknown status " << status_ << std::endl;
+            std::cerr << "read_from_socks5_client: unknown status " << socks_status_ << std::endl;
             return;
         }
 /*
