@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <boost/asio.hpp>
 
+#include "crypto.h"
+
 using boost::asio::ip::tcp;
 
 namespace Socks5 {
@@ -50,6 +52,7 @@ namespace Shadowsocks {
   enum length {
     SHADOWSOCKS_HEADER_MAX_LENGTH = 1 + 255 + 2,
     SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH = 0x3fff,
+    SHADOWSOCKS_AEAD_TAG_LENGTH = 16
   };
 }
 
@@ -127,6 +130,19 @@ private:
             read_from_ss_server(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
           }
         );
+      }
+    );
+  }
+
+  void read_some_from_socks5_client(size_t read_len) {
+    auto self(shared_from_this());
+    boost::asio::async_read(server_socket_, boost::asio::buffer(server_data_, read_len),
+      [this, self](const boost::system::error_code& read_error_code, std::size_t length) {
+        if (read_error_code) {
+          std::cerr << "from client async_read_some: " << read_error_code.message() << std::endl;
+          return;
+        }
+
       }
     );
   }
