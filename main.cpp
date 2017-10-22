@@ -156,12 +156,12 @@ private:
       fprintf(stderr, "salt generation failed\n");
       return;
     }
-    memset(salt, 32, 1);
+    //memset(salt, 32, 1);
 
     auto base_key = password_to_key((uint8_t *)"233", 3, 32);
 
-    auto new_key = hkdf_sha1(base_key.get(), 32, salt, sizeof salt, (uint8_t *) "ss-subkey", 9, 32);
-    memcpy(key, new_key.get(), 32);
+    auto new_key = hkdf_sha1(base_key.data(), 32, salt, sizeof salt, (uint8_t *) "ss-subkey", 9, 32);
+    memcpy(key, new_key.data(), 32);
     boost::asio::async_write(client_socket_, boost::asio::buffer(salt, sizeof salt),
       [this, self, callback](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
         if (write_error_code) {
@@ -174,7 +174,7 @@ private:
     );
   }
 
-  void send_to_ss_server(uint8_t *content, size_t length, std::function<void ()> callback) {
+  void send_to_ss_server(const uint8_t *content, size_t length, std::function<void ()> callback) {
     auto self(shared_from_this());
     unsigned long long len_len = Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + crypto_aead_chacha20poly1305_IETF_ABYTES;
     uint8_t len_ciphertext[len_len];
@@ -183,32 +183,46 @@ private:
                                               (uint8_t *)&len_short, 2,
                                               nullptr, 0,
                                               nullptr, (uint8_t *)&nonce_send, key);
+    for (int i = 0; i < 12; i++) {
+      fprintf(stderr, "%02x ", ((uint8_t *)&nonce_send)[i]);
+    }
+    fprintf(stderr, "\n");
     nonce_send[0]++;
+
     // encrypt length
     unsigned long long data_len = length + crypto_aead_chacha20poly1305_IETF_ABYTES;
     uint8_t data_ciphertext[data_len];
     crypto_aead_chacha20poly1305_ietf_encrypt(data_ciphertext, &data_len,
-                                         content, length,
-                                         nullptr, 0,
-                                         nullptr, (uint8_t *)&nonce_send, key);
+                                              content, length,
+                                              nullptr, 0,
+                                              nullptr, (uint8_t *)&nonce_send, key);
+
+    fprintf(stderr, "out ciphertext: ");
+    for (int i = 0; i < data_len; i++) {
+      fprintf(stderr, "%02x ", data_ciphertext[i]);
+    }
+    fprintf(stderr, "\n");
+
+    unsigned long long tmp_len = length;
+    uint8_t tmp_txt[length];
+    if (crypto_aead_chacha20poly1305_ietf_decrypt(tmp_txt, &tmp_len, nullptr, data_ciphertext, data_len, nullptr, 0, (uint8_t *)&nonce_send, key) != 0) {
+      std::cerr << "wtf, chuang si wo li,,," << std::endl;
+    } else {
+      std::cerr << "wtf, mei wen ti a,,," << std::endl;
+    }
+    for (int i = 0; i < 12; i++) {
+      fprintf(stderr, "%02x ", ((uint8_t *)&nonce_send)[i]);
+    }
+    fprintf(stderr, "\n");
     nonce_send[0]++;
     // encrypt data
-    boost::asio::async_write(client_socket_, boost::asio::buffer(len_ciphertext, len_len),
-      [this, self, &data_ciphertext, data_len, callback](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
+    boost::asio::async_write(client_socket_, std::vector<boost::asio::mutable_buffer>{{len_ciphertext, len_len}, {data_ciphertext, data_len}},
+      [this, self, callback](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
         if (write_error_code) {
           std::cerr << "to server async_write: " << write_error_code.message() << std::endl;
           return;
         }
-        boost::asio::async_write(client_socket_, boost::asio::buffer(data_ciphertext, data_len),
-          [this, self, callback](const boost::system::error_code& write_error_code_2, std::size_t wrote_len_2) {
-            if (write_error_code_2) {
-              std::cerr << "to server async_write 2: " << write_error_code_2.message() << std::endl;
-              return;
-            }
-            // TODO: how to do callback
-            callback();
-          }
-        );
+        callback();
       }
     );
   }
@@ -325,6 +339,12 @@ private:
             memcpy(ss_target_address + ss_target_written, server_data_, length);
             std::cerr << "Received connection to port " << htons(*reinterpret_cast<const uint16_t *>(server_data_)) << std::endl;
             ss_target_written += length;
+
+            std::cerr << "Written " << ss_target_written << " bytes" << std::endl;
+            for (int i = 0; i < ss_target_written; i++) {
+              fprintf(stderr, "0x%02x ", ss_target_address[i]);
+            }
+            fprintf(stderr, "\n");
 
             connect_to_ss_server([=] {
               send_to_ss_server(ss_target_address, ss_target_written,
