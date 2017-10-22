@@ -1,12 +1,18 @@
+#define BOOST_ASIO_ENABLE_HANDLER_TRACKING
+#define _GLIBCXX_USE_INT128
+
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <utility>
 #include <cstdint>
+#include <functional>
 #include <boost/asio.hpp>
 
 #include "crypto.h"
+#include <sodium.h>
+#include <openssl/rand.h>
 
 using boost::asio::ip::tcp;
 
@@ -52,6 +58,7 @@ namespace Shadowsocks {
   enum length {
     SHADOWSOCKS_HEADER_MAX_LENGTH = 1 + 255 + 2,
     SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH = 0x3fff,
+    SHADOWSOCKS_AEAD_LENGTH_LENGTH = 2,
     SHADOWSOCKS_AEAD_TAG_LENGTH = 16
   };
 }
@@ -67,7 +74,10 @@ public:
       status_(Socks5::SOCKS_NEW),
       server_data_{0},
       client_data_{0},
-      ss_target_address{0} {
+      ss_target_address{0},
+      nonce_send{0},
+      nonce_recv{0}
+  {
   }
 
   void start() {
@@ -86,31 +96,37 @@ private:
   uint8_t server_data_[Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH];
   uint8_t client_data_[Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH];
   uint8_t ss_target_address[Shadowsocks::SHADOWSOCKS_HEADER_MAX_LENGTH];
+  uint8_t salt[32];
+  uint8_t key[32];
   int ss_target_written = 0;
+  uint64_t nonce_send[2];
+  uint64_t nonce_recv[2];
 
   void set_up() {
     auto self(shared_from_this());
     fprintf(stderr, "session %p socket %p\n", this, &server_socket_);
-/*
+
+    read_from_socks5_client(Socks5::SOCKS_LENGTH_CLIENT_HELLO);
+  }
+
+  void connect_to_ss_server(std::function<void ()> callback) {
+    auto self(shared_from_this());
     resolver_.async_resolve(query_,
-      [this, self](const boost::system::error_code& ec, tcp::resolver::iterator iter) {
+      [this, self, callback](const boost::system::error_code& ec, tcp::resolver::iterator iter) {
         if (ec) {
           std::cerr << "to ss-server async_resolve: " << ec.message() << std::endl;
           return;
         }
         boost::asio::async_connect(client_socket_, iter,
-          [this, self](const boost::system::error_code& ec, tcp::resolver::iterator) {
+          [this, self, callback](const boost::system::error_code& ec, tcp::resolver::iterator) {
             if (ec) {
               std::cerr << "to ss-server async_connect: " << ec.message() << std::endl;
               return;
             }
-            read_from_ss_server();
+            init_connection_with_ss_server(callback);
         });
-        read_from_socks5_client();
       });
-  */
 
-    read_from_socks5_client(Socks5::SOCKS_LENGTH_CLIENT_HELLO);
   }
 
   void read_from_ss_server(size_t read_len) {
@@ -134,6 +150,69 @@ private:
     );
   }
 
+  void init_connection_with_ss_server(std::function<void ()> callback) {
+    auto self(shared_from_this());
+    if (!RAND_bytes(salt, sizeof salt)) {
+      fprintf(stderr, "salt generation failed\n");
+      return;
+    }
+    memset(salt, 32, 1);
+
+    auto base_key = password_to_key((uint8_t *)"233", 3, 32);
+
+    auto new_key = hkdf_sha1(base_key.get(), 32, salt, sizeof salt, (uint8_t *) "ss-subkey", 9, 32);
+    memcpy(key, new_key.get(), 32);
+    boost::asio::async_write(client_socket_, boost::asio::buffer(salt, sizeof salt),
+      [this, self, callback](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
+        if (write_error_code) {
+          std::cerr << "to server async_write: " << write_error_code.message() << std::endl;
+          return;
+        }
+        // TODO: how to do callback
+        callback();
+      }
+    );
+  }
+
+  void send_to_ss_server(uint8_t *content, size_t length, std::function<void ()> callback) {
+    auto self(shared_from_this());
+    unsigned long long len_len = Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + crypto_aead_chacha20poly1305_IETF_ABYTES;
+    uint8_t len_ciphertext[len_len];
+    uint16_t len_short = htons((uint16_t)length);
+    crypto_aead_chacha20poly1305_ietf_encrypt(len_ciphertext, &len_len,
+                                              (uint8_t *)&len_short, 2,
+                                              nullptr, 0,
+                                              nullptr, (uint8_t *)&nonce_send, key);
+    nonce_send[0]++;
+    // encrypt length
+    unsigned long long data_len = length + crypto_aead_chacha20poly1305_IETF_ABYTES;
+    uint8_t data_ciphertext[data_len];
+    crypto_aead_chacha20poly1305_ietf_encrypt(data_ciphertext, &data_len,
+                                         content, length,
+                                         nullptr, 0,
+                                         nullptr, (uint8_t *)&nonce_send, key);
+    nonce_send[0]++;
+    // encrypt data
+    boost::asio::async_write(client_socket_, boost::asio::buffer(len_ciphertext, len_len),
+      [this, self, &data_ciphertext, data_len, callback](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
+        if (write_error_code) {
+          std::cerr << "to server async_write: " << write_error_code.message() << std::endl;
+          return;
+        }
+        boost::asio::async_write(client_socket_, boost::asio::buffer(data_ciphertext, data_len),
+          [this, self, callback](const boost::system::error_code& write_error_code_2, std::size_t wrote_len_2) {
+            if (write_error_code_2) {
+              std::cerr << "to server async_write 2: " << write_error_code_2.message() << std::endl;
+              return;
+            }
+            // TODO: how to do callback
+            callback();
+          }
+        );
+      }
+    );
+  }
+
   void read_some_from_socks5_client(size_t read_len) {
     auto self(shared_from_this());
     boost::asio::async_read(server_socket_, boost::asio::buffer(server_data_, read_len),
@@ -142,7 +221,9 @@ private:
           std::cerr << "from client async_read_some: " << read_error_code.message() << std::endl;
           return;
         }
-
+        send_to_ss_server(server_data_, length, [=] {
+          read_some_from_socks5_client(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
+        });
       }
     );
   }
@@ -244,15 +325,25 @@ private:
             memcpy(ss_target_address + ss_target_written, server_data_, length);
             std::cerr << "Received connection to port " << htons(*reinterpret_cast<const uint16_t *>(server_data_)) << std::endl;
             ss_target_written += length;
-            // TODO: set up another function to read user data
-            boost::asio::async_write(server_socket_, boost::asio::buffer(Socks5::reply_success, sizeof(Socks5::reply_success)),
-               [this, self](const boost::system::error_code &write_error_code, std::size_t /*length*/) {
-                 if (write_error_code) {
-                   std::cerr << "to client async_write: SOCKS5 close failed " << write_error_code.message() << std::endl;
-                 }
-                 server_socket_.close(); // TODO: remove it
-               }
-            );
+
+            connect_to_ss_server([=] {
+              send_to_ss_server(ss_target_address, ss_target_written,
+                [this, self]() {
+                  boost::asio::async_write(server_socket_,
+                    boost::asio::buffer(Socks5::reply_success, sizeof(Socks5::reply_success)),
+                    [this, self](const boost::system::error_code &write_error_code, std::size_t /*length*/) {
+                      if (write_error_code) {
+                        std::cerr << "to client async_write: SOCKS5 close failed "
+                                  << write_error_code.message() << std::endl;
+                      }
+                      // server_socket_.close(); // TODO: remove it.
+                      // TODO: set up another function to read user data
+                      read_some_from_socks5_client(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
+                    }
+                  );
+                }
+              );
+            });
           }
             return;
           case Socks5::SOCKS_ESTABLISHED:
@@ -279,7 +370,7 @@ class server {
 public:
   server(boost::asio::io_service& io_service, uint16_t listen_port,
          const std::string& server_host, const std::string& server_port)
-    : acceptor_(io_service, tcp::endpoint(tcp::v6(), listen_port)),
+    : acceptor_(io_service, tcp::endpoint(tcp::v4(), listen_port)),
       socket_(io_service),
       io_service_(io_service){
     do_accept(server_host, server_port);

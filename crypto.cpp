@@ -2,6 +2,7 @@
 
 #include <openssl/evp.h>
 #include <openssl/kdf.h>
+#include <openssl/md5.h>
 
 std::shared_ptr<uint8_t> hkdf_sha1(const uint8_t *key, size_t key_len,
                                    const uint8_t *salt, size_t salt_len,
@@ -40,6 +41,28 @@ std::shared_ptr<uint8_t> hkdf_sha1(const uint8_t *key, size_t key_len,
     return nullptr;
   }
 
-  EVP_PKEY_CTX_free(pctx);
+  //EVP_PKEY_CTX_free(pctx);
+  return result;
+}
+
+std::shared_ptr<uint8_t> password_to_key(const uint8_t *password, size_t pw_len, size_t key_len) {
+  std::shared_ptr<uint8_t> result = std::make_shared<uint8_t>(32);
+  /*uint8_t iv[32];
+  if (EVP_BytesToKey(EVP_aes_256_cfb(), EVP_md5(), nullptr, password, pw_len, 1, result.get(), iv) != key_len) {
+    fprintf(stderr, "EVP_BytesToKey failed\n");
+  }*/
+  size_t generated_len = 0;
+  MD5_CTX ctx;
+  while (generated_len < key_len) {
+    fprintf(stderr, "generated %zu bytes\n", generated_len);
+    MD5_Init(&ctx);
+    if (generated_len) {
+      MD5_Update(&ctx, result.get(), generated_len);
+    }
+    MD5_Update(&ctx, password, pw_len);
+    MD5_Final(result.get() + generated_len, &ctx);
+    generated_len += 16;
+  }
+  fprintf(stderr, "final: generated %zu bytes\n", generated_len);
   return result;
 }
