@@ -80,8 +80,8 @@ private:
 
   enum Socks5::status status_;
 
-  uint8_t server_data_[Shadowsocks::SHADOWSOCKS_PAYLOAD_MAX_LENGTH];
-  uint8_t client_data_[Shadowsocks::SHADOWSOCKS_PAYLOAD_MAX_LENGTH];
+  uint8_t server_data_[Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH];
+  uint8_t client_data_[Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH];
   uint8_t ss_target_address[Shadowsocks::SHADOWSOCKS_HEADER_MAX_LENGTH];
   int ss_target_written = 0;
 
@@ -124,7 +124,7 @@ private:
               std::cerr << "to client async_write: " << write_error_code.message() << std::endl;
               return;
             }
-            read_from_ss_server(Shadowsocks::SHADOWSOCKS_PAYLOAD_MAX_LENGTH);
+            read_from_ss_server(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
           }
         );
       }
