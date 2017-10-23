@@ -1,4 +1,4 @@
-#define BOOST_ASIO_ENABLE_HANDLER_TRACKING
+// #define BOOST_ASIO_ENABLE_HANDLER_TRACKING
 #define _GLIBCXX_USE_INT128
 
 #include <cstdio>
@@ -13,6 +13,7 @@
 #include "crypto.h"
 #include <sodium.h>
 #include <openssl/rand.h>
+#include "log.h"
 
 using boost::asio::ip::tcp;
 
@@ -91,6 +92,10 @@ public:
     set_up();
   }
 
+  ~session() {
+    LOGV("dtor session %p socket %p\n", this, &server_socket_);
+  }
+
 private:
   tcp::socket server_socket_;
   tcp::socket client_socket_;
@@ -114,7 +119,7 @@ private:
 
   void set_up() {
     auto self(shared_from_this());
-    fprintf(stderr, "session %p socket %p\n", this, &server_socket_);
+    LOGV("session %p socket %p\n", this, &server_socket_);
 
     read_from_socks5_client(Socks5::SOCKS_LENGTH_CLIENT_HELLO);
   }
@@ -124,7 +129,7 @@ private:
     resolver_.async_resolve(query_,
       [this, self, callback](const boost::system::error_code& resolve_error_code, tcp::resolver::iterator iter) {
         if (resolve_error_code) {
-          std::cerr << "to ss-server async_resolve: " << resolve_error_code.message() << std::endl;
+          LOGE("to ss-server async_resolve %s", resolve_error_code.message().c_str());
           return;
         }
         boost::asio::async_connect(client_socket_, iter,
@@ -133,7 +138,7 @@ private:
               std::cerr << "to ss-server async_connect: " << connect_error_code.message() << std::endl;
               return;
             }
-            fprintf(stderr, "connected to ss-server\n");
+            LOGV("connected to ss-server");
             read_from_ss_server(32); // TODO: salt length
             init_connection_with_ss_server(callback);
         });
@@ -149,7 +154,7 @@ private:
           std::cerr << "from ss-server async_read: " << read_error_code.message() << std::endl;
           return;
         }
-        fprintf(stderr, "Read from ss-server %zu bytes\n", length);
+        LOGV("Read from ss-server %zu bytes", length);
         switch (shadowsocks_status_) {
           case Shadowsocks::SHADOWSOCKS_NEW: {
             memcpy(client_salt_, client_data_, length);
@@ -164,12 +169,12 @@ private:
             uint16_t payload_length;
             unsigned long long payload_length_len;
             if (crypto_aead_chacha20poly1305_ietf_decrypt((uint8_t *)&payload_length, &payload_length_len, nullptr, client_data_, length, nullptr, 0, (uint8_t *)&nonce_recv, client_key_) != 0) {
-              std::cerr << "read_from_ss_server length decryption failed" << std::endl;
+              LOGE("read_from_ss_server length decryption failed");
               // TODO: fail it
               return;
             }
             nonce_recv[0]++;
-            std::cerr << "read_from_ss_server payload length: " << ntohs(payload_length) << std::endl;
+            LOGV("read_from_ss_server payload length: %u", ntohs(payload_length));
             shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_PAYLOAD;
             read_from_ss_server(ntohs(payload_length) + crypto_aead_chacha20poly1305_IETF_ABYTES);
           }
@@ -178,15 +183,16 @@ private:
             uint8_t data[length];
             unsigned long long payload_length = length;
             if (crypto_aead_chacha20poly1305_ietf_decrypt(data, &payload_length, nullptr, client_data_, length, nullptr, 0, (uint8_t *)&nonce_recv, client_key_) != 0) {
-              std::cerr << "read_from_ss_server content decryption failed" << std::endl;
+              LOGE("read_from_ss_server content decryption failed");
               // TODO: fail it
               return;
             }
             nonce_recv[0]++;
-            std::cerr << "read_from_ss_server payload:" << data << std::endl;
+            LOGV("read_from_ss_server payload %zu bytes: ", payload_length);
+            hexdump(data, payload_length);
             shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_LENGTH;
 
-            boost::asio::async_write(server_socket_, boost::asio::buffer(data, length),
+            boost::asio::async_write(server_socket_, boost::asio::buffer(data, payload_length),
               [this, self](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
                 if (write_error_code) {
                   std::cerr << "to server async_write: " << write_error_code.message() << std::endl;
@@ -202,10 +208,10 @@ private:
     );
   }
 
-  void init_connection_with_ss_server(std::function<void ()> callback) {
+  void init_connection_with_ss_server(const std::function<void ()> &callback) {
     auto self(shared_from_this());
     if (!RAND_bytes(server_salt_, sizeof server_salt_)) {
-      fprintf(stderr, "server_salt_ generation failed\n");
+      LOGF("server_salt_ generation failed");
       return;
     }
     //memset(server_salt_, 32, 1);
@@ -226,7 +232,7 @@ private:
     );
   }
 
-  void send_to_ss_server(const uint8_t *content, size_t length, std::function<void ()> callback) {
+  void send_to_ss_server(const uint8_t *content, size_t length, const std::function<void ()> &callback) {
     auto self(shared_from_this());
     unsigned long long len_len = Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + crypto_aead_chacha20poly1305_IETF_ABYTES;
     uint8_t len_ciphertext[len_len];
@@ -235,10 +241,8 @@ private:
                                               (uint8_t *)&len_short, 2,
                                               nullptr, 0,
                                               nullptr, (uint8_t *)&nonce_send, server_key_);
-    for (int i = 0; i < 12; i++) {
-      fprintf(stderr, "%02x ", ((uint8_t *)&nonce_send)[i]);
-    }
-    fprintf(stderr, "\n");
+    LOGV("nonce_send when len:");
+    hexdump(&nonce_send, 12);
     nonce_send[0]++;
 
     // encrypt length
@@ -248,24 +252,12 @@ private:
                                               content, length,
                                               nullptr, 0,
                                               nullptr, (uint8_t *)&nonce_send, server_key_);
+    LOGV("out ciphertext: ");
+    hexdump(data_ciphertext, data_len);
 
-    fprintf(stderr, "out ciphertext: ");
-    for (int i = 0; i < data_len; i++) {
-      fprintf(stderr, "%02x ", data_ciphertext[i]);
-    }
-    fprintf(stderr, "\n");
+    LOGV("nonce_send when payload:");
+    hexdump(&nonce_send, 12);
 
-    unsigned long long tmp_len = length;
-    uint8_t tmp_txt[length];
-    if (crypto_aead_chacha20poly1305_ietf_decrypt(tmp_txt, &tmp_len, nullptr, data_ciphertext, data_len, nullptr, 0, (uint8_t *)&nonce_send, server_key_) != 0) {
-      std::cerr << "wtf, chuang si wo li,,," << std::endl;
-    } else {
-      std::cerr << "wtf, mei wen ti a,,," << std::endl;
-    }
-    for (int i = 0; i < 12; i++) {
-      fprintf(stderr, "%02x ", ((uint8_t *)&nonce_send)[i]);
-    }
-    fprintf(stderr, "\n");
     nonce_send[0]++;
     // encrypt data
     boost::asio::async_write(client_socket_, std::vector<boost::asio::mutable_buffer>{{len_ciphertext, len_len}, {data_ciphertext, data_len}},
@@ -287,7 +279,8 @@ private:
           std::cerr << "from client async_read_some: " << read_error_code.message() << std::endl;
           return;
         }
-        fprintf(stderr, "async_read_some Received %zu bytes from client\n", length);
+        LOGV("async_read_some Received %zu bytes from client: ", length);
+        hexdump(server_data_, length);
         send_to_ss_server(server_data_, length, [=] {
           read_some_from_socks5_client(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
         });
@@ -317,14 +310,14 @@ private:
                 }
               );
             } else {
-              std::cerr << "from client async_read_some: SOCKS5 handshake failed" << std::endl;
+              LOGE("from client async_read_some: SOCKS5 handshake failed");
             }
           }
             return;
           case Socks5::SOCKS_WAIT_REQUEST: {
             if (server_data_[0] == 5) {
               if (server_data_[1] != Socks5::SOCKS_CONNECT) { // CONNECT supported only
-                std::cerr << "from client async_read_some: SOCKS5 CMD " << server_data_[1] << " not supported" << std::endl;
+                LOGE("from client async_read_some: SOCKS5 CMD %u not supported", server_data_[1]);
                 boost::asio::async_write(server_socket_, boost::asio::buffer(Socks5::reply_command_not_supported, sizeof(Socks5::reply_command_not_supported)),
                   [this, self](const boost::system::error_code &write_error_code, std::size_t /*length*/) {
                     if (write_error_code) {
@@ -347,7 +340,7 @@ private:
                   ss_header_length = 1;
                   break;
                 default:
-                  std::cerr << "from client async_read_some: SOCKS5 ATYP " << server_data_[3] << " not supported" << std::endl;
+                  LOGE("from client async_read_some: SOCKS5 ATYP %u not supported", server_data_[3]);
                   boost::asio::async_write(server_socket_, boost::asio::buffer(Socks5::reply_address_type_not_supported, sizeof(Socks5::reply_address_type_not_supported)),
                     [this, self](const boost::system::error_code &write_error_code, std::size_t /*length*/) {
                       if (write_error_code) {
@@ -362,7 +355,7 @@ private:
               read_from_socks5_client(ss_header_length);
               return;
             } else {
-              std::cerr << "from client async_read_some: SOCKS5 request processing failed" << std::endl;
+              LOGE("from client async_read_some: SOCKS5 request processing failed");
             }
           }
             return;
@@ -382,7 +375,7 @@ private:
           case Socks5::SOCKS_WAIT_DOMAIN: {
             socks_status_ = Socks5::SOCKS_WAIT_DSTPORT;
             memcpy(ss_target_address + ss_target_written, server_data_, length);
-            std::cerr << "Received connection to domain " << reinterpret_cast<const char *>(server_data_) << std::endl;
+            LOGI("Received connection to domain %s", reinterpret_cast<const char *>(server_data_));
             ss_target_written += length;
             read_from_socks5_client(Socks5::SOCKS_LENGTH_PORT);
           }
@@ -390,10 +383,10 @@ private:
           case Socks5::SOCKS_WAIT_DSTPORT: {
             socks_status_ = Socks5::SOCKS_ESTABLISHED;
             memcpy(ss_target_address + ss_target_written, server_data_, length);
-            std::cerr << "Received connection to port " << htons(*reinterpret_cast<const uint16_t *>(server_data_)) << std::endl;
+            LOGI("Received connection to port %u", htons(*reinterpret_cast<const uint16_t *>(server_data_)));
             ss_target_written += length;
 
-            std::cerr << "Written " << ss_target_written << " bytes" << std::endl;
+            LOGV("Written %d bytes", ss_target_written);
             for (int i = 0; i < ss_target_written; i++) {
               fprintf(stderr, "0x%02x ", ss_target_address[i]);
             }
@@ -409,7 +402,7 @@ private:
                         std::cerr << "to client async_write: SOCKS5 close failed "
                                   << write_error_code.message() << std::endl;
                       }
-                      fprintf(stderr, "Session connected to server\n");
+                      LOGI("Session connected to server");
                       // server_socket_.close(); // TODO: remove it.
                       // TODO: set up another function to read user data
                       read_some_from_socks5_client(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
@@ -425,16 +418,6 @@ private:
             std::cerr << "read_from_socks5_client: unknown status " << socks_status_ << std::endl;
             return;
         }
-/*
-        boost::asio::async_write(client_socket_, boost::asio::buffer(server_data_, length),
-          [this, self](const boost::system::error_code& write_error_code, std::size_t) {
-            if (write_error_code) {
-              std::cerr << "to ss-server async_write: " << write_error_code.message() << std::endl;
-              return;
-            }
-            read_from_socks5_client();
-          }
-        );*/
       }
     );
   }
@@ -444,7 +427,7 @@ class server {
 public:
   server(boost::asio::io_service& io_service, uint16_t listen_port,
          const std::string& server_host, const std::string& server_port)
-    : acceptor_(io_service, tcp::endpoint(tcp::v4(), listen_port)),
+    : acceptor_(io_service, tcp::endpoint(boost::asio::ip::address::from_string("127.0.0.1"), listen_port)),
       socket_(io_service),
       io_service_(io_service){
     do_accept(server_host, server_port);
@@ -481,7 +464,7 @@ int main(int argc, char* argv[]) {
 
     server s(io_service, std::atoi(argv[1]), argv[2], argv[3]);
 
-    std::cerr << "Listening on port " << std::atoi(argv[1]) << std::endl;
+    LOGI("Listening on port %d", std::atoi(argv[1]));
     io_service.run();
   }
   catch (std::exception& e) {
