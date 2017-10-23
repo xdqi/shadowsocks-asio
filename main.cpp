@@ -106,7 +106,7 @@ private:
     read_from_socks5_client(Socks5::SOCKS_LENGTH_CLIENT_HELLO);
   }
 
-  void connect_to_ss_server(std::function<void ()> callback) {
+  void connect_to_ss_server(const std::function<void ()> &callback) {
     auto self(shared_from_this());
     resolver_.async_resolve(query_,
       [this, self, callback](const boost::system::error_code& resolve_error_code, tcp::resolver::iterator iter) {
@@ -141,22 +141,12 @@ private:
           case Shadowsocks::SHADOWSOCKS_NEW: {
 
             auto base_key = password_to_key((uint8_t *)"233", 3, 32);
-            decryptor_ = new Shadowsocks::AeadDecryptor(cipher_, base_key.data(), client_data_);/*
-            memcpy(client_salt_, client_data_, length);
-            hkdf_sha1(client_key_, 32, base_key.data(), 32, client_salt_, sizeof client_salt_, (uint8_t *) "ss-subkey", 9);*/
+            decryptor_ = new Shadowsocks::AeadDecryptor(cipher_, base_key.data(), client_data_);
             shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_LENGTH;
             read_from_ss_server(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + cipher_->tag_size_);
           }
             return;
           case Shadowsocks::SHADOWSOCKS_WAIT_LENGTH: {
-            /*
-            unsigned long long payload_length_len;
-            if (crypto_aead_chacha20poly1305_ietf_decrypt((uint8_t *)&payload_length, &payload_length_len, nullptr, client_data_, length, nullptr, 0, (uint8_t *)&nonce_recv, client_key_) != 0) {
-              LOGE("read_from_ss_server length decryption failed");
-              // TODO: fail it
-              return;
-            }
-            nonce_recv[0]++;*/
             auto length_net = decryptor_->decrypt_data(client_data_, length);
             uint16_t payload_length = htons(*reinterpret_cast<const uint16_t *>(length_net.data()));
             LOGV("read_from_ss_server payload length: %u", payload_length);
@@ -167,13 +157,6 @@ private:
           case Shadowsocks::SHADOWSOCKS_WAIT_PAYLOAD: {
             auto data = decryptor_->decrypt_data(client_data_, length);
             unsigned long long payload_length = length - cipher_->tag_size_;
-            /*uint8_t data[payload_length];
-            if (crypto_aead_chacha20poly1305_ietf_decrypt(data, &payload_length, nullptr, client_data_, length, nullptr, 0, (uint8_t *)&nonce_recv, client_key_) != 0) {
-              LOGE("read_from_ss_server content decryption failed");
-              // TODO: fail it
-              return;
-            }
-            nonce_recv[0]++;*/
             LOGV("read_from_ss_server payload %llu bytes: ", payload_length);
             hexdump(data.data(), payload_length);
             shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_LENGTH;
@@ -195,12 +178,7 @@ private:
   }
 
   void init_connection_with_ss_server(const std::function<void ()> &callback) {
-    auto self(shared_from_this());/*
-    if (!RAND_bytes(server_salt_, sizeof server_salt_)) {
-      LOGF("server_salt_ generation failed");
-      return;
-    }
-*/
+    auto self(shared_from_this());
     auto psk = password_to_key((uint8_t *)"233", 3, 32);
 
     encryptor_ = new Shadowsocks::AeadEncryptor(cipher_, psk.data());
@@ -219,33 +197,6 @@ private:
 
   void send_to_ss_server(const uint8_t *content, size_t length, const std::function<void ()> &callback) {
     auto self(shared_from_this());
-    /*unsigned long long len_len = Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + crypto_aead_chacha20poly1305_IETF_ABYTES;
-    uint8_t len_ciphertext[len_len];
-    uint16_t len_short = htons((uint16_t)length);
-    crypto_aead_chacha20poly1305_ietf_encrypt(len_ciphertext, &len_len,
-                                              (uint8_t *)&len_short, 2,
-                                              nullptr, 0,
-                                              nullptr, (uint8_t *)&nonce_send, server_key_);
-    LOGV("nonce_send when len:");
-    hexdump(&nonce_send, 12);
-    nonce_send[0]++;
-
-    // encrypt length
-    unsigned long long data_len = length + crypto_aead_chacha20poly1305_IETF_ABYTES;
-    uint8_t data_ciphertext[data_len];
-    crypto_aead_chacha20poly1305_ietf_encrypt(data_ciphertext, &data_len,
-                                              content, length,
-                                              nullptr, 0,
-                                              nullptr, (uint8_t *)&nonce_send, server_key_);
-    LOGV("out ciphertext: ");
-    hexdump(data_ciphertext, data_len);
-
-    LOGV("nonce_send when payload:");
-    hexdump(&nonce_send, 12);
-
-    nonce_send[0]++;
-    // encrypt data*/
-
     auto ciphertext = encryptor_->encrypt_data(content, length);
 
     boost::asio::async_write(client_socket_, boost::asio::buffer(ciphertext),
