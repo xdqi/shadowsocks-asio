@@ -1,6 +1,11 @@
 #ifndef SHADOWSOCKS_LOG_H
 #define SHADOWSOCKS_LOG_H
 
+#include <cstdio>
+#include <cstdint>
+#include <cctype>
+#include <vector>
+
 #define LOG(level, fmt, ...) do {fprintf(stderr, "[%7s] [%s:%d] ", #level, __func__, __LINE__); fprintf(stderr, fmt, ##__VA_ARGS__); fprintf(stderr, "\n"); } while (false)
 
 #define LOGD(fmt, ...) LOG(debug, fmt, ##__VA_ARGS__)
@@ -33,6 +38,10 @@ inline void hexdump(const void *input, size_t length) {
     }
     fprintf(stderr, "\n");
   }
+}
+
+inline void hexdump(const std::vector<uint8_t>& data) {
+  hexdump(data.data(), data.size());
 }
 
 #endif //SHADOWSOCKS_LOG_H

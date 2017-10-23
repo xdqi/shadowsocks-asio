@@ -1,5 +1,4 @@
-// #define BOOST_ASIO_ENABLE_HANDLER_TRACKING
-#define _GLIBCXX_USE_INT128
+#define BOOST_ASIO_ENABLE_HANDLER_TRACKING
 
 #include <cstdio>
 #include <cstdlib>
@@ -55,21 +54,6 @@ const uint8_t reply_command_not_supported[10] = {0x05, 0x07, 0x00, 0x01, 0x00, 0
 const uint8_t reply_address_type_not_supported[10] = {0x05, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 }
 
-namespace Shadowsocks {
-  enum length {
-    SHADOWSOCKS_HEADER_MAX_LENGTH = 1 + 255 + 2,
-    SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH = 0x3fff,
-    SHADOWSOCKS_AEAD_LENGTH_LENGTH = 2,
-    SHADOWSOCKS_AEAD_TAG_LENGTH = 16
-  };
-
-  enum status {
-    SHADOWSOCKS_NEW,
-    SHADOWSOCKS_WAIT_LENGTH,
-    SHADOWSOCKS_WAIT_PAYLOAD
-  };
-}
-
 class session : public std::enable_shared_from_this<session> {
 public:
   session(boost::asio::io_service& io_service, tcp::socket socket,
@@ -82,9 +66,7 @@ public:
       shadowsocks_status_(Shadowsocks::SHADOWSOCKS_NEW),
       server_data_{0},
       client_data_{0},
-      ss_target_address{0},
-      nonce_send{0},
-      nonce_recv{0}
+      ss_target_address{0}
   {
   }
 
@@ -109,18 +91,18 @@ private:
   uint8_t server_data_[Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH];
   uint8_t client_data_[Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH];
   uint8_t ss_target_address[Shadowsocks::SHADOWSOCKS_HEADER_MAX_LENGTH];
-  uint8_t server_salt_[32];
-  uint8_t server_key_[32];
-  uint8_t client_salt_[32];
-  uint8_t client_key_[32];
   int ss_target_written = 0;
-  uint64_t nonce_send[2];
-  uint64_t nonce_recv[2];
+
+  const Shadowsocks::AeadCipher *cipher_;
+  Shadowsocks::AeadEncryptor *encryptor_;
+  Shadowsocks::AeadDecryptor *decryptor_;
+
 
   void set_up() {
     auto self(shared_from_this());
     LOGV("session %p socket %p\n", this, &server_socket_);
 
+    cipher_ = new Shadowsocks::SodiumChacha20IetfPoly1305Cipher;
     read_from_socks5_client(Socks5::SOCKS_LENGTH_CLIENT_HELLO);
   }
 
@@ -157,39 +139,43 @@ private:
         LOGV("Read from ss-server %zu bytes", length);
         switch (shadowsocks_status_) {
           case Shadowsocks::SHADOWSOCKS_NEW: {
-            memcpy(client_salt_, client_data_, length);
+
             auto base_key = password_to_key((uint8_t *)"233", 3, 32);
-            auto new_key = hkdf_sha1(base_key.data(), 32, client_salt_, sizeof client_salt_, (uint8_t *) "ss-subkey", 9, 32);
-            memcpy(client_key_, new_key.data(), 32);
+            decryptor_ = new Shadowsocks::AeadDecryptor(cipher_, base_key.data(), client_data_);/*
+            memcpy(client_salt_, client_data_, length);
+            hkdf_sha1(client_key_, 32, base_key.data(), 32, client_salt_, sizeof client_salt_, (uint8_t *) "ss-subkey", 9);*/
             shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_LENGTH;
-            read_from_ss_server(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + crypto_aead_chacha20poly1305_IETF_ABYTES);
+            read_from_ss_server(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + cipher_->tag_size_);
           }
             return;
           case Shadowsocks::SHADOWSOCKS_WAIT_LENGTH: {
-            uint16_t payload_length;
+            /*
             unsigned long long payload_length_len;
             if (crypto_aead_chacha20poly1305_ietf_decrypt((uint8_t *)&payload_length, &payload_length_len, nullptr, client_data_, length, nullptr, 0, (uint8_t *)&nonce_recv, client_key_) != 0) {
               LOGE("read_from_ss_server length decryption failed");
               // TODO: fail it
               return;
             }
-            nonce_recv[0]++;
-            LOGV("read_from_ss_server payload length: %u", ntohs(payload_length));
+            nonce_recv[0]++;*/
+            auto length_net = decryptor_->decrypt_data(client_data_, length);
+            uint16_t payload_length = htons(*reinterpret_cast<const uint16_t *>(length_net.data()));
+            LOGV("read_from_ss_server payload length: %u", payload_length);
             shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_PAYLOAD;
-            read_from_ss_server(ntohs(payload_length) + crypto_aead_chacha20poly1305_IETF_ABYTES);
+            read_from_ss_server(payload_length + cipher_->tag_size_);
           }
             return;
           case Shadowsocks::SHADOWSOCKS_WAIT_PAYLOAD: {
-            uint8_t data[length];
-            unsigned long long payload_length = length;
+            auto data = decryptor_->decrypt_data(client_data_, length);
+            unsigned long long payload_length = length - cipher_->tag_size_;
+            /*uint8_t data[payload_length];
             if (crypto_aead_chacha20poly1305_ietf_decrypt(data, &payload_length, nullptr, client_data_, length, nullptr, 0, (uint8_t *)&nonce_recv, client_key_) != 0) {
               LOGE("read_from_ss_server content decryption failed");
               // TODO: fail it
               return;
             }
-            nonce_recv[0]++;
-            LOGV("read_from_ss_server payload %zu bytes: ", payload_length);
-            hexdump(data, payload_length);
+            nonce_recv[0]++;*/
+            LOGV("read_from_ss_server payload %llu bytes: ", payload_length);
+            hexdump(data.data(), payload_length);
             shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_LENGTH;
 
             boost::asio::async_write(server_socket_, boost::asio::buffer(data, payload_length),
@@ -209,18 +195,17 @@ private:
   }
 
   void init_connection_with_ss_server(const std::function<void ()> &callback) {
-    auto self(shared_from_this());
+    auto self(shared_from_this());/*
     if (!RAND_bytes(server_salt_, sizeof server_salt_)) {
       LOGF("server_salt_ generation failed");
       return;
     }
-    //memset(server_salt_, 32, 1);
+*/
+    auto psk = password_to_key((uint8_t *)"233", 3, 32);
 
-    auto base_key = password_to_key((uint8_t *)"233", 3, 32);
+    encryptor_ = new Shadowsocks::AeadEncryptor(cipher_, psk.data());
 
-    auto new_key = hkdf_sha1(base_key.data(), 32, server_salt_, sizeof server_salt_, (uint8_t *) "ss-subkey", 9, 32);
-    memcpy(server_key_, new_key.data(), 32);
-    boost::asio::async_write(client_socket_, boost::asio::buffer(server_salt_, sizeof server_salt_),
+    boost::asio::async_write(client_socket_, boost::asio::buffer(encryptor_->salt(), cipher_->salt_size_),
       [this, self, callback](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
         if (write_error_code) {
           std::cerr << "to server async_write: " << write_error_code.message() << std::endl;
@@ -234,7 +219,7 @@ private:
 
   void send_to_ss_server(const uint8_t *content, size_t length, const std::function<void ()> &callback) {
     auto self(shared_from_this());
-    unsigned long long len_len = Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + crypto_aead_chacha20poly1305_IETF_ABYTES;
+    /*unsigned long long len_len = Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + crypto_aead_chacha20poly1305_IETF_ABYTES;
     uint8_t len_ciphertext[len_len];
     uint16_t len_short = htons((uint16_t)length);
     crypto_aead_chacha20poly1305_ietf_encrypt(len_ciphertext, &len_len,
@@ -259,8 +244,11 @@ private:
     hexdump(&nonce_send, 12);
 
     nonce_send[0]++;
-    // encrypt data
-    boost::asio::async_write(client_socket_, std::vector<boost::asio::mutable_buffer>{{len_ciphertext, len_len}, {data_ciphertext, data_len}},
+    // encrypt data*/
+
+    auto ciphertext = encryptor_->encrypt_data(content, length);
+
+    boost::asio::async_write(client_socket_, boost::asio::buffer(ciphertext),
       [this, self, callback](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
         if (write_error_code) {
           std::cerr << "to server async_write: " << write_error_code.message() << std::endl;
@@ -386,11 +374,8 @@ private:
             LOGI("Received connection to port %u", htons(*reinterpret_cast<const uint16_t *>(server_data_)));
             ss_target_written += length;
 
-            LOGV("Written %d bytes", ss_target_written);
-            for (int i = 0; i < ss_target_written; i++) {
-              fprintf(stderr, "0x%02x ", ss_target_address[i]);
-            }
-            fprintf(stderr, "\n");
+            LOGV("ss target address %d bytes: ", ss_target_written);
+            hexdump(ss_target_address, ss_target_written);
 
             connect_to_ss_server([=] {
               send_to_ss_server(ss_target_address, ss_target_written,
@@ -427,7 +412,7 @@ class server {
 public:
   server(boost::asio::io_service& io_service, uint16_t listen_port,
          const std::string& server_host, const std::string& server_port)
-    : acceptor_(io_service, tcp::endpoint(boost::asio::ip::address::from_string("127.0.0.1"), listen_port)),
+    : acceptor_(io_service, tcp::endpoint(boost::asio::ip::address::from_string("0.0.0.0"), listen_port)),
       socket_(io_service),
       io_service_(io_service){
     do_accept(server_host, server_port);
