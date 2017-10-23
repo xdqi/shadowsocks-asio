@@ -73,12 +73,12 @@ protected:
   virtual void aead_encrypt(uint8_t *ciphertext, size_t len_ciphertext,
                             const uint8_t *message, size_t len_message,
                             const uint8_t *ad, size_t len_ad,
-                            const uint8_t *nonce, const uint8_t *key) = 0;
+                            const uint8_t *nonce, const uint8_t *key) const = 0;
 
   virtual void aead_decrypt(uint8_t *message, size_t len_message,
                             const uint8_t *ciphertext, size_t len_ciphertext,
                             const uint8_t *ad, size_t len_ad,
-                            const uint8_t *nonce, const uint8_t *key) = 0;
+                            const uint8_t *nonce, const uint8_t *key) const = 0;
 
 public:
   static const AeadCipher *const get_cipher(const std::string &name) {
@@ -92,14 +92,14 @@ public:
 };
 
 class AeadEncryptor {
-  AeadCipher *cipher_;
+  const AeadCipher *cipher_;
   uint8_t *salt_;
   uint8_t *key_;
   uint64_t *nonce_;
   size_t tag_size_;
 
 public:
-  explicit AeadEncryptor(const AeadCipher *cipher, const uint8_t *psk) {
+  explicit AeadEncryptor(const AeadCipher *cipher, const uint8_t *psk): cipher_(cipher) {
     size_t salt_size = cipher->salt_size_;
     size_t key_size = cipher->key_size_;
     size_t nonce_uint64_size = ceil(cipher->nonce_size_ / 8.0);
@@ -123,12 +123,37 @@ public:
   const uint8_t *salt() {
     return salt_;
   };
-  std::vector<uint8_t> encrypt_data(const uint8_t *message, size_t len_msg);
+  std::vector<uint8_t> encrypt_data(const uint8_t *message, size_t len_msg) {
+    //std::vector<uint8_t> result(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_ + len_msg + tag_size_);
+    //result.reserve(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_ + len_msg + tag_size_); // TODO: redunant
+
+    uint8_t tmp[Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_ + len_msg + tag_size_];
+    LOGV("message to encrypt");
+    hexdump(message, len_msg);
+
+    // encrypt length
+
+    uint16_t msg_len_msg = htons((uint16_t)len_msg);
+
+    cipher_->aead_encrypt(tmp, Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_,
+                          reinterpret_cast<const uint8_t *>(&msg_len_msg), Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH,
+                          nullptr, 0,
+                          reinterpret_cast<const uint8_t *>(nonce_), key_);
+    nonce_[0]++;
+
+    // encrypt message
+    cipher_->aead_encrypt(tmp + Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_, len_msg + tag_size_,
+                          message, len_msg,
+                          nullptr, 0,
+                          reinterpret_cast<const uint8_t *>(nonce_), key_);
+    nonce_[0]++;
+    return std::vector<uint8_t>(tmp, tmp+Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_ + len_msg + tag_size_);
+  }
 };
 
 
 class AeadDecryptor {
-  AeadCipher *cipher_;
+  const AeadCipher *cipher_;
   uint8_t *salt_;
   uint8_t *key_;
   uint64_t *nonce_;
@@ -136,7 +161,7 @@ class AeadDecryptor {
 
 
 public:
-  explicit AeadDecryptor(const AeadCipher *cipher, const uint8_t *psk, const uint8_t *salt) {
+  explicit AeadDecryptor(const AeadCipher *cipher, const uint8_t *psk, const uint8_t *salt): cipher_(cipher) {
     size_t salt_size = cipher->salt_size_;
     size_t key_size = cipher->key_size_;
     size_t nonce_uint64_size = ceil(cipher->nonce_size_ / 8.0);
@@ -201,7 +226,7 @@ protected:
   void aead_encrypt(uint8_t *ciphertext, size_t len_ciphertext,
                     const uint8_t *message, size_t len_message,
                     const uint8_t *ad, size_t len_ad,
-                    const uint8_t *nonce, const uint8_t *key) final {
+                    const uint8_t *nonce, const uint8_t *key) const {
     unsigned long long sodium_len = len_ciphertext;
     encryptor_(ciphertext, &sodium_len,
                message, len_message,
@@ -212,7 +237,7 @@ protected:
   void aead_decrypt(uint8_t *message, size_t len_message,
                     const uint8_t *ciphertext, size_t len_ciphertext,
                     const uint8_t *ad, size_t len_ad,
-                    const uint8_t *nonce, const uint8_t *key) final {
+                    const uint8_t *nonce, const uint8_t *key) const {
     unsigned long long sodium_len = len_message;
     decryptor_(message, &sodium_len,
                nullptr,
