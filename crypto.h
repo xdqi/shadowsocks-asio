@@ -123,30 +123,27 @@ public:
     return salt_;
   };
   std::vector<uint8_t> encrypt_data(const uint8_t *message, size_t len_msg) {
-    //std::vector<uint8_t> result(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_ + len_msg + tag_size_);
-    //result.reserve(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_ + len_msg + tag_size_); // TODO: redunant
+    std::vector<uint8_t> result(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_ + len_msg + tag_size_);
 
-    uint8_t tmp[Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_ + len_msg + tag_size_];
     LOGV("message to encrypt");
     hexdump(message, len_msg);
 
     // encrypt length
-
     uint16_t msg_len_msg = htons((uint16_t)len_msg);
 
-    cipher_->aead_encrypt(tmp, Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_,
+    cipher_->aead_encrypt(result.data(), Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_,
                           reinterpret_cast<const uint8_t *>(&msg_len_msg), Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH,
                           nullptr, 0,
                           reinterpret_cast<const uint8_t *>(nonce_), key_);
     nonce_[0]++;
 
     // encrypt message
-    cipher_->aead_encrypt(tmp + Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_, len_msg + tag_size_,
+    cipher_->aead_encrypt(result.data() + Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_, len_msg + tag_size_,
                           message, len_msg,
                           nullptr, 0,
                           reinterpret_cast<const uint8_t *>(nonce_), key_);
     nonce_[0]++;
-    return std::vector<uint8_t>(tmp, tmp+Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_ + len_msg + tag_size_);
+    return result;
   }
 };
 
@@ -181,7 +178,6 @@ public:
 
   std::vector<uint8_t> decrypt_data(const uint8_t *ciphertext, size_t len_ciphertext) {
     std::vector<uint8_t> result(len_ciphertext - tag_size_);
-    result.reserve(len_ciphertext - tag_size_); // TODO: redunant
 
     cipher_->aead_decrypt(result.data(), len_ciphertext - tag_size_,
                           ciphertext, len_ciphertext,

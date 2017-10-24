@@ -194,7 +194,6 @@ private:
           std::cerr << "to server async_write: " << write_error_code.message() << std::endl;
           return;
         }
-        // TODO: how to do callback
         callback();
       }
     );
