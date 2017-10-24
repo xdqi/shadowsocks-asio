@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <openssl/evp.h>
 
 template<typename T>
 class Singleton
@@ -119,6 +120,12 @@ public:
     memset(nonce_, 0, cipher->nonce_size_);
   }
 
+  ~AeadEncryptor() {
+    delete []salt_;
+    delete []key_;
+    delete []nonce_;
+  }
+
   const uint8_t *salt() {
     return salt_;
   };
@@ -174,6 +181,12 @@ public:
               salt_, salt_size,
               (uint8_t *) "ss-subkey", 9);
     memset(nonce_, 0, cipher->nonce_size_);
+  }
+
+  ~AeadDecryptor() {
+    delete []salt_;
+    delete []key_;
+    delete []nonce_;
   }
 
   std::vector<uint8_t> decrypt_data(const uint8_t *ciphertext, size_t len_ciphertext) {
@@ -254,6 +267,166 @@ public:
   SodiumAes256GcmCipher() : SodiumAeadCipher(32, 32, 12, 16,
                                              crypto_aead_aes256gcm_encrypt,
                                              crypto_aead_aes256gcm_decrypt) {}
+};
+
+class OpensslGcmAeadCipher : public AeadCipher {
+  const EVP_CIPHER *cipher_;
+
+public:
+  OpensslGcmAeadCipher(size_t key_size, size_t salt_size, size_t nonce_size, size_t tag_size,
+    const EVP_CIPHER *cipher) :
+  AeadCipher(key_size, salt_size, nonce_size, tag_size), cipher_(cipher) {}
+
+protected:
+  void aead_encrypt(uint8_t *ciphertext, size_t len_ciphertext,
+                    const uint8_t *message, size_t len_message,
+                    const uint8_t *ad, size_t len_ad,
+                    const uint8_t *nonce, const uint8_t *key) const {
+    EVP_CIPHER_CTX *ctx;
+    int len;
+    int ciphertext_len;
+
+    /* Create and initialise the context */
+    if(!(ctx = EVP_CIPHER_CTX_new())) {
+      LOGE("EVP_CIPHER_CTX_new failed");
+    };
+
+    /* Initialise the encryption operation. */
+    if(1 != EVP_EncryptInit_ex(ctx, cipher_, NULL, NULL, NULL)) {
+      LOGE("EVP_EncryptInit_ex init cipher failed");
+    }
+
+    /* Set IV length if default 12 bytes (96 bits) is not appropriate */
+    if(1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, nonce_size_, NULL)) {
+      LOGE("EVP_CTRL_GCM_SET_IVLEN set nonce failed");
+    }
+
+    /* Initialise key and IV */
+    if(1 != EVP_EncryptInit_ex(ctx, NULL, NULL, key, nonce)) {
+      LOGE("EVP_EncryptInit_ex set key and nonce failed");
+    }
+
+    /* Provide any AAD data. This can be called zero or more times as
+     * required
+     */
+    if (len_ad) {
+      if (1 != EVP_EncryptUpdate(ctx, NULL, &len, ad, len_ad)) {
+        LOGE("EVP_EncryptUpdate set ad failed");
+      }
+    }
+
+    /* Provide the message to be encrypted, and obtain the encrypted output.
+     * EVP_EncryptUpdate can be called multiple times if necessary
+     */
+    if(1 != EVP_EncryptUpdate(ctx, ciphertext, &len, message, len_message)) {
+      LOGE("EVP_EncryptUpdate encryption failed");
+    }
+    ciphertext_len = len;
+
+    /* Finalise the encryption. Normally ciphertext bytes may be written at
+     * this stage, but this does not occur in GCM mode
+     */
+    if(1 != EVP_EncryptFinal_ex(ctx, ciphertext + len, &len)) {
+      LOGE("EVP_EncryptFinal_ex failed");
+    }
+    ciphertext_len += len;
+
+    /* Get the tag */
+    if(1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, tag_size_, ciphertext + ciphertext_len)) {
+      LOGE("EVP_CTRL_GCM_GET_TAG write tag failed");
+    }
+
+    /* Clean up */
+    EVP_CIPHER_CTX_free(ctx);
+  }
+
+  void aead_decrypt(uint8_t *message, size_t len_message,
+                    const uint8_t *ciphertext, size_t len_ciphertext,
+                    const uint8_t *ad, size_t len_ad,
+                    const uint8_t *nonce, const uint8_t *key) const {
+    EVP_CIPHER_CTX *ctx;
+    int len;
+    int plaintext_len;
+    int ret;
+
+    /* Create and initialise the context */
+    if(!(ctx = EVP_CIPHER_CTX_new())) {
+      LOGE("EVP_CIPHER_CTX_new failed\n");
+    };
+
+    /* Initialise the decryption operation. */
+    if(!EVP_DecryptInit_ex(ctx, cipher_, NULL, NULL, NULL)) {
+      LOGE("EVP_DecryptInit_ex init cipher failed");
+    }
+
+    /* Set IV length. Not necessary if this is 12 bytes (96 bits) */
+    if(!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, nonce_size_, NULL)) {
+      LOGE("EVP_CTRL_GCM_SET_IVLEN set nonce failed");
+    }
+
+    /* Initialise key and IV */
+    if(!EVP_DecryptInit_ex(ctx, NULL, NULL, key, nonce)) {
+      LOGE("EVP_DecryptInit_ex set key and nonce failed");
+    }
+    /* Provide any AAD data. This can be called zero or more times as
+     * required
+     */
+
+    if (len_ad) {
+      if (!EVP_DecryptUpdate(ctx, NULL, &len, ad, len_ad)) {
+        LOGE("EVP_DecryptUpdate set ad failed");
+      }
+    }
+
+    /* Provide the message to be decrypted, and obtain the plaintext output.
+     * EVP_DecryptUpdate can be called multiple times if necessary
+     */
+    if(!EVP_DecryptUpdate(ctx, message, &len, ciphertext, len_message)) {
+      LOGE("EVP_DecryptUpdate decryption failed");
+    }
+    plaintext_len = len;
+
+    /* Set expected tag value. Works in OpenSSL 1.0.1d and later*/
+    if(!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, tag_size_, (void *) (ciphertext + len_message))) {
+      LOGE("EVP_CTRL_GCM_SET_TAG set expected tag failed");
+    }
+
+    /* Finalise the decryption. A positive return value indicates success,
+     * anything else is a failure - the plaintext is not trustworthy.
+     */
+    ret = EVP_DecryptFinal_ex(ctx, message, &len);
+
+    /* Clean up */
+    EVP_CIPHER_CTX_free(ctx);
+
+    if (ret > 0)
+    {
+      /* Success */
+      plaintext_len += len;
+      // TODO: return plaintext length
+    }
+    else
+    {
+      LOGE("Message forged");
+      memset(message, 0xcc, len_message);
+      /* Verify failed */
+    }
+  }
+};
+
+class OpensslAes256GcmCipher : public OpensslGcmAeadCipher {
+public:
+  OpensslAes256GcmCipher() : OpensslGcmAeadCipher(32, 32, 12, 16, EVP_aes_256_gcm()) {}
+};
+
+class OpensslAes192GcmCipher : public OpensslGcmAeadCipher {
+public:
+  OpensslAes192GcmCipher() : OpensslGcmAeadCipher(24, 24, 12, 16, EVP_aes_192_gcm()) {}
+};
+
+class OpensslAes128GcmCipher : public OpensslGcmAeadCipher {
+public:
+  OpensslAes128GcmCipher() : OpensslGcmAeadCipher(16, 16, 12, 16, EVP_aes_128_gcm()) {}
 };
 
 } // namespace Shadowsocks

@@ -61,9 +61,11 @@ std::vector<uint8_t> password_to_key(const uint8_t *password, size_t pw_len, siz
 }
 
 namespace Shadowsocks {
-std::unordered_map<std::string, AeadCipher *> aead_ciphers{
+std::unordered_map<std::string, AeadCipher *> aead_ciphers {
   {"chacha20-ietf-poly1305", &Singleton<SodiumChacha20IetfPoly1305Cipher>::instance()},
   {"aes-256-gcm",            &Singleton<SodiumAes256GcmCipher>::instance()},
+  {"aes-192-gcm",            &Singleton<OpensslAes192GcmCipher>::instance()},
+  {"aes-128-gcm",            &Singleton<OpensslAes128GcmCipher>::instance()},
 };
 
 
