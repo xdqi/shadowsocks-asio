@@ -40,7 +40,6 @@ enum length {
   SHADOWSOCKS_HEADER_MAX_LENGTH = 1 + 255 + 2,
   SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH = 0x3fff,
   SHADOWSOCKS_AEAD_LENGTH_LENGTH = 2,
-  SHADOWSOCKS_AEAD_TAG_LENGTH = 16
 };
 
 enum status {
@@ -81,7 +80,7 @@ protected:
                             const uint8_t *nonce, const uint8_t *key) const = 0;
 
 public:
-  static const AeadCipher *const get_cipher(const std::string &name) {
+  static const AeadCipher *get_cipher(const std::string &name) {
     auto found = aead_ciphers.find(name);
     if (found != aead_ciphers.end()) {
       return aead_ciphers.at(name);

@@ -17,6 +17,11 @@
 using boost::asio::ip::tcp;
 
 namespace Socks5 {
+enum version {
+  SOCKS_VERSION_4 = 4,
+  SOCKS_VERSION_5 = 5
+};
+
 enum status {
   SOCKS_NEW,            // Client connected and did nothing
   SOCKS_WAIT_REQUEST,   // Client did not send request
@@ -57,7 +62,8 @@ const uint8_t reply_address_type_not_supported[10] = {0x05, 0x08, 0x00, 0x01, 0x
 class session : public std::enable_shared_from_this<session> {
 public:
   session(boost::asio::io_service& io_service, tcp::socket socket,
-          const std::string& server_host, const std::string& server_port)
+          const std::string& server_host, const std::string& server_port,
+          const Shadowsocks::AeadCipher *cipher, const std::vector<uint8_t> &key)
     : server_socket_(std::move(socket)),
       client_socket_(io_service),
       resolver_(io_service),
@@ -66,7 +72,9 @@ public:
       shadowsocks_status_(Shadowsocks::SHADOWSOCKS_NEW),
       server_data_{0},
       client_data_{0},
-      ss_target_address{0}
+      ss_target_address{0},
+      cipher_(cipher),
+      key_(key)
   {
   }
 
@@ -93,6 +101,7 @@ private:
   uint8_t ss_target_address[Shadowsocks::SHADOWSOCKS_HEADER_MAX_LENGTH];
   int ss_target_written = 0;
 
+  std::vector<uint8_t> key_;
   const Shadowsocks::AeadCipher *cipher_;
   Shadowsocks::AeadEncryptor *encryptor_;
   Shadowsocks::AeadDecryptor *decryptor_;
@@ -102,7 +111,6 @@ private:
     auto self(shared_from_this());
     LOGV("session %p socket %p\n", this, &server_socket_);
 
-    cipher_ = new Shadowsocks::SodiumChacha20IetfPoly1305Cipher;
     read_from_socks5_client(Socks5::SOCKS_LENGTH_CLIENT_HELLO);
   }
 
@@ -121,7 +129,7 @@ private:
               return;
             }
             LOGV("connected to ss-server");
-            read_from_ss_server(32); // TODO: salt length
+            read_from_ss_server(cipher_->salt_size_);
             init_connection_with_ss_server(callback);
         });
       });
@@ -140,8 +148,7 @@ private:
         switch (shadowsocks_status_) {
           case Shadowsocks::SHADOWSOCKS_NEW: {
 
-            auto base_key = password_to_key((uint8_t *)"233", 3, 32);
-            decryptor_ = new Shadowsocks::AeadDecryptor(cipher_, base_key.data(), client_data_);
+            decryptor_ = new Shadowsocks::AeadDecryptor(cipher_, key_.data(), client_data_);
             shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_LENGTH;
             read_from_ss_server(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + cipher_->tag_size_);
           }
@@ -179,9 +186,7 @@ private:
 
   void init_connection_with_ss_server(const std::function<void ()> &callback) {
     auto self(shared_from_this());
-    auto psk = password_to_key((uint8_t *)"233", 3, 32);
-
-    encryptor_ = new Shadowsocks::AeadEncryptor(cipher_, psk.data());
+    encryptor_ = new Shadowsocks::AeadEncryptor(cipher_, key_.data());
 
     boost::asio::async_write(client_socket_, boost::asio::buffer(encryptor_->salt(), cipher_->salt_size_),
       [this, self, callback](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
@@ -254,7 +259,7 @@ private:
           }
             return;
           case Socks5::SOCKS_WAIT_REQUEST: {
-            if (server_data_[0] == 5) {
+            if (server_data_[0] == Socks5::SOCKS_VERSION_5) {
               if (server_data_[1] != Socks5::SOCKS_CONNECT) { // CONNECT supported only
                 LOGE("from client async_read_some: SOCKS5 CMD %u not supported", server_data_[1]);
                 boost::asio::async_write(server_socket_, boost::asio::buffer(Socks5::reply_command_not_supported, sizeof(Socks5::reply_command_not_supported)),
@@ -339,8 +344,6 @@ private:
                                   << write_error_code.message() << std::endl;
                       }
                       LOGI("Session connected to server");
-                      // server_socket_.close(); // TODO: remove it.
-                      // TODO: set up another function to read user data
                       read_some_from_socks5_client(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
                     }
                   );
@@ -362,10 +365,13 @@ private:
 class server {
 public:
   server(boost::asio::io_service& io_service, uint16_t listen_port,
-         const std::string& server_host, const std::string& server_port)
-    : acceptor_(io_service, tcp::endpoint(boost::asio::ip::address::from_string("0.0.0.0"), listen_port)),
+         const std::string& server_host, const std::string& server_port,
+         const std::string &cipher, const std::string &password)
+    : acceptor_(io_service, tcp::endpoint(boost::asio::ip::address::from_string("127.0.0.1"), listen_port)),
       socket_(io_service),
-      io_service_(io_service){
+      io_service_(io_service),
+      cipher_(Shadowsocks::AeadCipher::get_cipher(cipher)),
+      key_(password_to_key((const uint8_t *) password.c_str(), password.length(), cipher_->key_size_)) {
     do_accept(server_host, server_port);
   }
 
@@ -377,7 +383,7 @@ private:
           std::cerr << "Server async_accept: " << ec.message() << std::endl;
         }
 
-        std::make_shared<session>(io_service_, std::move(socket_), server_host, server_port)->start();
+        std::make_shared<session>(io_service_, std::move(socket_), server_host, server_port, cipher_, key_)->start();
 
         // execute regardless of failed
         do_accept(server_host, server_port);
@@ -387,18 +393,20 @@ private:
   std::reference_wrapper<boost::asio::io_service> io_service_;
   tcp::acceptor acceptor_;
   tcp::socket socket_;
+  const Shadowsocks::AeadCipher *cipher_;
+  std::vector<uint8_t> key_;
 };
 
 int main(int argc, char* argv[]) {
   try {
-    if (argc != 4) {
-      std::cerr << "Usage: " << argv[0] <<" <listen_port> <server_host> <server_port>\n";
+    if (argc != 6) {
+      std::cerr << "Usage: " << argv[0] <<" <listen_port> <server_host> <server_port> <cipher> <password>\n";
       return 1;
     }
 
     boost::asio::io_service io_service;
 
-    server s(io_service, std::atoi(argv[1]), argv[2], argv[3]);
+    server s(io_service, std::atoi(argv[1]), argv[2], argv[3], argv[4], argv[5]);
 
     LOGI("Listening on port %d", std::atoi(argv[1]));
     io_service.run();
