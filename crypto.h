@@ -3,8 +3,6 @@
 
 #include "log.h"
 
-#include <sodium.h>
-#include <openssl/rand.h>
 #include <arpa/inet.h>
 #include <unordered_map>
 #include <string>
@@ -13,7 +11,15 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+
+#ifdef SODIUM_FOUND
+#include <sodium.h>
+#endif
+
+#ifdef OPENSSL_FOUND
 #include <openssl/evp.h>
+#include <openssl/rand.h>
+#endif
 
 template<typename T>
 class Singleton
@@ -37,6 +43,9 @@ void hkdf_sha1(uint8_t *key, size_t key_len,
 std::vector<uint8_t> password_to_key(const uint8_t *password, size_t pw_len, size_t key_len);
 
 namespace Shadowsocks {
+
+void print_all_ciphers();
+
 enum length {
   SHADOWSOCKS_HEADER_MAX_LENGTH = 1 + 255 + 2,
   SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH = 0x3fff,
@@ -109,9 +118,13 @@ public:
     nonce_ = new uint64_t[nonce_uint64_size];
     tag_size_ = cipher->tag_size_;
 
+#ifdef HAVE_SODIUM
+    randombytes_buf(randombytes_buf);
+#elif defined(HAVE_OPENSSL)
     if (!RAND_bytes(salt_, salt_size)) {
       LOGF("server_salt_ generation failed");
     }
+#endif
 
     hkdf_sha1(key_, key_size,
               psk, key_size,
@@ -203,6 +216,7 @@ public:
   }
 };
 
+#ifdef SODIUM_FOUND
 typedef int (*SodiumAeadEncryptor)(unsigned char *c,
                                    unsigned long long *clen,
                                    const unsigned char *m,
@@ -269,6 +283,9 @@ public:
                                              crypto_aead_aes256gcm_decrypt) {}
 };
 
+#endif // SODIUM_FOUND
+
+#ifdef OPENSSL_FOUND
 class OpensslGcmAeadCipher : public AeadCipher {
   const EVP_CIPHER *cipher_;
 
@@ -414,6 +431,11 @@ protected:
   }
 };
 
+class OpensslChacha20IetfPoly1305Cipher : public OpensslGcmAeadCipher {
+public:
+  OpensslChacha20IetfPoly1305Cipher() : OpensslGcmAeadCipher(32, 32, 12, 16, EVP_chacha20_poly1305()) {}
+};
+
 class OpensslAes256GcmCipher : public OpensslGcmAeadCipher {
 public:
   OpensslAes256GcmCipher() : OpensslGcmAeadCipher(32, 32, 12, 16, EVP_aes_256_gcm()) {}
@@ -428,6 +450,8 @@ class OpensslAes128GcmCipher : public OpensslGcmAeadCipher {
 public:
   OpensslAes128GcmCipher() : OpensslGcmAeadCipher(16, 16, 12, 16, EVP_aes_128_gcm()) {}
 };
+
+#endif // OPENSSL_FOUND
 
 } // namespace Shadowsocks
 #endif // SHADOWSOCKS_CRYPTO_H

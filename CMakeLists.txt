@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.6)
 project(shadowsocks)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11 -Wall -Wextra")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11 -Wall -Wextra -DSODIUM_FOUND")
 
 set(SOURCE_FILES main.cpp crypto.cpp)
 
@@ -13,6 +13,7 @@ if(APPLE)
     set(OPENSSL_ROOT_DIR /usr/local/opt/openssl@1.1)
 endif()
 find_package(OpenSSL)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DOPENSSL_FOUND=${OPENSSL_FOUND}")
 
 add_executable(shadowsocks ${SOURCE_FILES})
 

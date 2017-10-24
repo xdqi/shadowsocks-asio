@@ -62,12 +62,43 @@ std::vector<uint8_t> password_to_key(const uint8_t *password, size_t pw_len, siz
 
 namespace Shadowsocks {
 std::unordered_map<std::string, AeadCipher *> aead_ciphers {
+#ifdef SODIUM_FOUND
   {"chacha20-ietf-poly1305", &Singleton<SodiumChacha20IetfPoly1305Cipher>::instance()},
   {"aes-256-gcm",            &Singleton<SodiumAes256GcmCipher>::instance()},
-  {"aes-192-gcm",            &Singleton<OpensslAes192GcmCipher>::instance()},
-  {"aes-128-gcm",            &Singleton<OpensslAes128GcmCipher>::instance()},
-};
+#elif defined(OPENSSL_FOUND)
+  {"chacha20-ietf-poly1305", &Singleton<OpensslChacha20IetfPoly1305Cipher>::instance()},
+  {"aes-256-gcm",            &Singleton<OpensslAes256GcmCipher>::instance()},
+#endif
 
+#ifdef SODIUM_FOUND
+  {"sodium::chacha20-ietf-poly1305",  &Singleton<SodiumChacha20IetfPoly1305Cipher>::instance()},
+  {"sodium::aes-256-gcm",              &Singleton<SodiumAes256GcmCipher>::instance()},
+#endif
 
+#ifdef OPENSSL_FOUND
+  {"aes-192-gcm",                     &Singleton<OpensslAes192GcmCipher>::instance()},
+  {"aes-128-gcm",                     &Singleton<OpensslAes128GcmCipher>::instance()},
+  {"openssl::chacha20-ietf-poly1305", &Singleton<OpensslChacha20IetfPoly1305Cipher>::instance()},
+  {"openssl::aes-256-gcm",            &Singleton<OpensslAes256GcmCipher>::instance()},
+  {"openssl::aes-192-gcm",            &Singleton<OpensslAes192GcmCipher>::instance()},
+  {"openssl::aes-128-gcm",            &Singleton<OpensslAes128GcmCipher>::instance()},
+#endif
+
+}; // aead_ciphers
+
+void print_all_ciphers() {
+#ifdef SODIUM_FOUND
+  printf("Built with libsodium " SODIUM_VERSION_STRING ".\n");
+#endif
+
+#ifdef OPENSSL_FOUND
+  printf("Built with " OPENSSL_VERSION_TEXT ".\n");
+#endif
+
+  printf("\nSupported ciphers: \n\n");
+  for (auto &cipher: aead_ciphers) {
+    printf("  %s\n", cipher.first.c_str());
+  }
+}
 
 }

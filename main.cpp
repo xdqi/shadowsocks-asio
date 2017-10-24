@@ -399,7 +399,9 @@ private:
 int main(int argc, char* argv[]) {
   try {
     if (argc != 6) {
-      std::cerr << "Usage: " << argv[0] <<" <listen_port> <server_host> <server_port> <cipher> <password>\n";
+      printf("Shadowsocks ASIO prototype.\n\n");
+      Shadowsocks::print_all_ciphers();
+      printf("\nUsage: %s <listen_port> <server_host> <server_port> <cipher> <password>\n", argv[0]);
       return 1;
     }
 
