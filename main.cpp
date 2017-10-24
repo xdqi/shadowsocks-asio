@@ -63,7 +63,7 @@ class session : public std::enable_shared_from_this<session> {
 public:
   session(boost::asio::io_service& io_service, tcp::socket socket,
           const std::string& server_host, const std::string& server_port,
-          const Shadowsocks::AeadCipher *cipher, const std::vector<uint8_t> &key)
+          const Shadowsocks::AeadCipher *cipher, const std::vector<uint8_t> &psk)
     : server_socket_(std::move(socket)),
       client_socket_(io_service),
       resolver_(io_service),
@@ -74,7 +74,7 @@ public:
       client_data_{0},
       ss_target_address{0},
       cipher_(cipher),
-      key_(key)
+      psk_(psk)
   {
   }
 
@@ -101,7 +101,7 @@ private:
   uint8_t ss_target_address[Shadowsocks::SHADOWSOCKS_HEADER_MAX_LENGTH];
   int ss_target_written = 0;
 
-  std::vector<uint8_t> key_;
+  std::vector<uint8_t> psk_;
   const Shadowsocks::AeadCipher *cipher_;
   Shadowsocks::AeadEncryptor *encryptor_;
   Shadowsocks::AeadDecryptor *decryptor_;
@@ -148,7 +148,7 @@ private:
         switch (shadowsocks_status_) {
           case Shadowsocks::SHADOWSOCKS_NEW: {
 
-            decryptor_ = new Shadowsocks::AeadDecryptor(cipher_, key_.data(), client_data_);
+            decryptor_ = new Shadowsocks::AeadDecryptor(cipher_, psk_.data(), client_data_);
             shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_LENGTH;
             read_from_ss_server(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + cipher_->tag_size_);
           }
@@ -186,7 +186,7 @@ private:
 
   void init_connection_with_ss_server(const std::function<void ()> &callback) {
     auto self(shared_from_this());
-    encryptor_ = new Shadowsocks::AeadEncryptor(cipher_, key_.data());
+    encryptor_ = new Shadowsocks::AeadEncryptor(cipher_, psk_.data());
 
     boost::asio::async_write(client_socket_, boost::asio::buffer(encryptor_->salt(), cipher_->salt_size_),
       [this, self, callback](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
@@ -371,7 +371,7 @@ public:
       socket_(io_service),
       io_service_(io_service),
       cipher_(Shadowsocks::AeadCipher::get_cipher(cipher)),
-      key_(password_to_key((const uint8_t *) password.c_str(), password.length(), cipher_->key_size_)) {
+      psk_(password_to_key((const uint8_t *) password.c_str(), password.length(), cipher_->key_size_)) {
     do_accept(server_host, server_port);
   }
 
@@ -383,7 +383,7 @@ private:
           std::cerr << "Server async_accept: " << ec.message() << std::endl;
         }
 
-        std::make_shared<session>(io_service_, std::move(socket_), server_host, server_port, cipher_, key_)->start();
+        std::make_shared<session>(io_service_, std::move(socket_), server_host, server_port, cipher_, psk_)->start();
 
         // execute regardless of failed
         do_accept(server_host, server_port);
@@ -394,7 +394,7 @@ private:
   tcp::acceptor acceptor_;
   tcp::socket socket_;
   const Shadowsocks::AeadCipher *cipher_;
-  std::vector<uint8_t> key_;
+  std::vector<uint8_t> psk_;
 };
 
 int main(int argc, char* argv[]) {
