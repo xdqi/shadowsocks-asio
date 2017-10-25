@@ -24,11 +24,18 @@ enum version {
 
 enum status {
   SOCKS_NEW,            // Client connected and did nothing
+  SOCKS_WAIT_METHODS,   // Client did not send authentication methods
   SOCKS_WAIT_REQUEST,   // Client did not send request
   SOCKS_WAIT_DSTADDR,
   SOCKS_WAIT_DOMAIN,
   SOCKS_WAIT_DSTPORT,
   SOCKS_ESTABLISHED     // Connection Established
+};
+
+enum authentication {
+  SOCKS_AUTH_NO = 0,
+  SOCKS_AUTH_GSSAPI = 1,
+  SOCKS_AUTH_USERPASS = 2
 };
 
 enum address_type {
@@ -44,14 +51,13 @@ enum command {
 };
 
 enum length {
-  SOCKS_LENGTH_CLIENT_HELLO = 3,
+  SOCKS_LENGTH_VERSION_NMETHOD = 2,
   SOCKS_LENGTH_REQUEST_UNTIL_ATYP = 4,
   SOCKS_LENGTH_ADDR_IPV4 = 4,
   SOCKS_LENGTH_ADDR_IPV6 = 16,
   SOCKS_LENGTH_PORT = 2,
 };
 
-const uint8_t client_hello[3] = {0x05, 0x01, 0x00};
 const uint8_t server_hello[2] = {0x05, 0x00};
 
 const uint8_t reply_success[10] = {0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
@@ -111,7 +117,7 @@ private:
     auto self(shared_from_this());
     LOGV("session %p socket %p", this, &server_socket_);
 
-    read_from_socks5_client(Socks5::SOCKS_LENGTH_CLIENT_HELLO);
+    read_from_socks5_client(Socks5::SOCKS_LENGTH_VERSION_NMETHOD);
   }
 
   void connect_to_ss_server(const std::function<void ()> &callback) {
@@ -241,7 +247,24 @@ private:
         }
         switch (socks_status_) {
           case Socks5::SOCKS_NEW: {
-            if (memcmp(server_data_, Socks5::client_hello, sizeof(Socks5::client_hello)) == 0) {
+            if (server_data_[0] == Socks5::SOCKS_VERSION_5) {
+              socks_status_ = Socks5::SOCKS_WAIT_METHODS;
+              read_from_socks5_client(server_data_[1]);  // read methods from NMETHOD field
+            } else {
+              LOGE("from client async_read: SOCKS5 version error");
+              hexdump(server_data_, length);
+            }
+          }
+            return;
+          case Socks5::SOCKS_WAIT_METHODS: {
+            bool have_method = false;
+            for (int i = 0; i < length; ++i) {
+              if (server_data_[i] == Socks5::SOCKS_AUTH_NO) {
+                have_method = true;
+                break;
+              }
+            }
+            if (have_method) {
               boost::asio::async_write(server_socket_, boost::asio::buffer(Socks5::server_hello, sizeof(Socks5::server_hello)),
                 [this, self](const boost::system::error_code &write_error_code, std::size_t /*length*/) {
                   if (write_error_code) {
@@ -253,7 +276,8 @@ private:
                 }
               );
             } else {
-              LOGE("from client async_read_some: SOCKS5 handshake failed");
+              LOGE("from client async_read: SOCKS5 methods not supported");
+              hexdump(server_data_, length);
             }
           }
             return;
