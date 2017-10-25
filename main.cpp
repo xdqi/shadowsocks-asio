@@ -23,13 +23,16 @@ enum version {
 };
 
 enum status {
-  SOCKS_NEW,            // Client connected and did nothing
-  SOCKS_WAIT_METHODS,   // Client did not send authentication methods
-  SOCKS_WAIT_REQUEST,   // Client did not send request
+  SOCKS_NEW,              // Client connected and did nothing
+  SOCKS_WAIT_METHODS,     // Client did not send authentication methods
+  SOCKS_WAIT_REQUEST,     // Client did not send request
   SOCKS_WAIT_DSTADDR,
   SOCKS_WAIT_DOMAIN,
   SOCKS_WAIT_DSTPORT,
-  SOCKS_ESTABLISHED     // Connection Established
+  SOCKS_ESTABLISHED,      // Connection Established
+  SOCKS4_WAIT_DSTPORT_IP, // SOCKS4
+  SOCKS4_WAIT_USERID,     // SOCKS4
+  SOCKS4_WAIT_DOMAIN,     // SOCKS4
 };
 
 enum authentication {
@@ -56,9 +59,11 @@ enum length {
   SOCKS_LENGTH_ADDR_IPV4 = 4,
   SOCKS_LENGTH_ADDR_IPV6 = 16,
   SOCKS_LENGTH_PORT = 2,
+  SOCKS4_LENGTH_DSTPORT_IP = 6
 };
 
 const uint8_t server_hello[2] = {0x05, 0x00};
+const uint8_t socks4_server_hello[8] = {0x00, 90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
 const uint8_t reply_success[10] = {0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 const uint8_t reply_command_not_supported[10] = {0x05, 0x07, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
@@ -247,9 +252,17 @@ private:
         }
         switch (socks_status_) {
           case Socks5::SOCKS_NEW: {
-            if (server_data_[0] == Socks5::SOCKS_VERSION_5) {
+            if (server_data_[0] == Socks5::SOCKS_VERSION_5) { // SOCKS 5
               socks_status_ = Socks5::SOCKS_WAIT_METHODS;
               read_from_socks5_client(server_data_[1]);  // read methods from NMETHOD field
+            } else if (server_data_[0] == Socks5::SOCKS_VERSION_4) { // SOCKS 4 or SOCKS 4a
+              if (server_data_[1] == Socks5::SOCKS_CONNECT) {
+                // parse port and ip
+                socks_status_ = Socks5::SOCKS4_WAIT_DSTPORT_IP;
+                read_from_socks5_client(Socks5::SOCKS4_LENGTH_DSTPORT_IP);
+              } else {
+                LOGE("from client async_read: SOCKS4 CMD %u not supported", server_data_[1]);
+              }
             } else {
               LOGE("from client async_read: SOCKS5 version error");
               hexdump(server_data_, length);
@@ -281,10 +294,103 @@ private:
             }
           }
             return;
+          case Socks5::SOCKS4_WAIT_DSTPORT_IP: {
+            // When using SOCKS4, we set ss_target_address as following format
+            // [2-byte port][1-byte type][variable-length host][2-byte port]
+            // Then we send ss_target_address+2 to server
+            memcpy(ss_target_address, server_data_, Socks5::SOCKS_LENGTH_PORT);
+            LOGI("memcpy 1");
+            hexdump(ss_target_address, 7);
+            ss_target_written += Socks5::SOCKS_LENGTH_PORT;
+            // We'll determine if it's domain later. So we believe it's IPv4 address here :)
+            ss_target_address[ss_target_written++] = Socks5::SOCKS_ADDR_IPV4;
+            memcpy(ss_target_address + ss_target_written,
+                   server_data_ + Socks5::SOCKS_LENGTH_PORT,
+                   Socks5::SOCKS_LENGTH_ADDR_IPV4);
+            LOGI("memcpy 2");
+            hexdump(ss_target_address, 7);
+            ss_target_written += Socks5::SOCKS_LENGTH_ADDR_IPV4;
+            socks_status_ = Socks5::SOCKS4_WAIT_USERID;
+            read_from_socks5_client(1);
+          }
+            return;
+          case Socks5::SOCKS4_WAIT_USERID: {
+            // iterate until NUL
+            LOGI("wait user id %02x", server_data_[0]);
+            if (server_data_[0] == 0) {
+              hexdump(ss_target_address, 7);
+              if (ss_target_address[3] == 0 &&
+                  ss_target_address[4] == 0 &&
+                  ss_target_address[5] == 0 &&
+                  ss_target_address[6] != 0) {  // determine SOCKS 4a
+                ss_target_address[2] = Socks5::SOCKS_ADDR_DOMAIN;
+                socks_status_ = Socks5::SOCKS4_WAIT_DOMAIN;
+                ss_target_written -= Socks5::SOCKS_LENGTH_ADDR_IPV4;  // remove fake IPv4 address from buffer
+                ss_target_written++;  // but reserve the vary length byte
+                read_from_socks5_client(1);
+              } else {
+                socks_status_ = Socks5::SOCKS_ESTABLISHED;
+                memcpy(ss_target_address + ss_target_written, ss_target_address, Socks5::SOCKS_LENGTH_PORT);
+                connect_to_ss_server([=] {
+                  send_to_ss_server(ss_target_address + Socks5::SOCKS_LENGTH_PORT, ss_target_written,
+                    [this, self]() {
+                      boost::asio::async_write(server_socket_,
+                                               boost::asio::buffer(Socks5::socks4_server_hello, sizeof(Socks5::socks4_server_hello)),
+                        [this, self](const boost::system::error_code &write_error_code, std::size_t /*length*/) {
+                          if (write_error_code) {
+                            std::cerr << "to client async_write: SOCKS4 close failed "
+                                      << write_error_code.message() << std::endl;
+                          }
+                          LOGI("Session connected to SOCKS4 server");
+                          read_some_from_socks5_client(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
+                        }
+                      );
+                    }
+                  );
+                });
+              }
+            } else {
+              // We do not care the user id, just ignore it
+              read_from_socks5_client(1);
+            }
+          }
+            return;
+          case Socks5::SOCKS4_WAIT_DOMAIN: {
+            // iterate until NUL
+            if (server_data_[0] == 0) {
+              socks_status_ = Socks5::SOCKS_ESTABLISHED;
+
+              memcpy(ss_target_address + ss_target_written, ss_target_address, Socks5::SOCKS_LENGTH_PORT);
+              connect_to_ss_server([=] {
+                hexdump(ss_target_address + Socks5::SOCKS_LENGTH_PORT, ss_target_written);
+                send_to_ss_server(ss_target_address + Socks5::SOCKS_LENGTH_PORT, ss_target_written,
+                  [this, self]() {
+                    boost::asio::async_write(server_socket_,
+                                             boost::asio::buffer(Socks5::socks4_server_hello,
+                                                                 sizeof(Socks5::socks4_server_hello)),
+                      [this, self](const boost::system::error_code &write_error_code, std::size_t /*length*/) {
+                        if (write_error_code) {
+                          std::cerr << "to client async_write: SOCKS4a close failed "
+                                    << write_error_code.message() << std::endl;
+                        }
+                        LOGI("Session connected to SOCKS4a server");
+                        read_some_from_socks5_client(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
+                      }
+                    );
+                  }
+                );
+              });
+            } else {
+              ss_target_address[ss_target_written++] = server_data_[0];
+              ss_target_address[3]++;
+              read_from_socks5_client(1);
+            }
+          }
+            return;
           case Socks5::SOCKS_WAIT_REQUEST: {
             if (server_data_[0] == Socks5::SOCKS_VERSION_5) {
               if (server_data_[1] != Socks5::SOCKS_CONNECT) { // CONNECT supported only
-                LOGE("from client async_read_some: SOCKS5 CMD %u not supported", server_data_[1]);
+                LOGE("from client async_read: SOCKS5 CMD %u not supported", server_data_[1]);
                 boost::asio::async_write(server_socket_, boost::asio::buffer(Socks5::reply_command_not_supported, sizeof(Socks5::reply_command_not_supported)),
                   [this, self](const boost::system::error_code &write_error_code, std::size_t /*length*/) {
                     if (write_error_code) {
@@ -366,7 +472,7 @@ private:
                         std::cerr << "to client async_write: SOCKS5 close failed "
                                   << write_error_code.message() << std::endl;
                       }
-                      LOGI("Session connected to server");
+                      LOGI("Session connected to SOCKS5 server");
                       read_some_from_socks5_client(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
                     }
                   );
