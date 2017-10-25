@@ -64,6 +64,7 @@ enum length {
 
 const uint8_t server_hello[2] = {0x05, 0x00};
 const uint8_t socks4_server_hello[8] = {0x00, 90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+const uint8_t socks4_rejected[8] = {0x00, 91, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
 const uint8_t reply_success[10] = {0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 const uint8_t reply_command_not_supported[10] = {0x05, 0x07, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
@@ -262,6 +263,13 @@ private:
                 read_from_socks5_client(Socks5::SOCKS4_LENGTH_DSTPORT_IP);
               } else {
                 LOGE("from client async_read: SOCKS4 CMD %u not supported", server_data_[1]);
+                boost::asio::async_write(server_socket_, boost::asio::buffer(Socks5::socks4_rejected, sizeof(Socks5::socks4_rejected)),
+                  [this, self](const boost::system::error_code &write_error_code, std::size_t /*length*/) {
+                    if (write_error_code) {
+                      std::cerr << "to client async_write: SOCKS4 close failed " << write_error_code.message() << std::endl;
+                    }
+                  }
+                );
               }
             } else {
               LOGE("from client async_read: SOCKS5 version error");
@@ -299,16 +307,12 @@ private:
             // [2-byte port][1-byte type][variable-length host][2-byte port]
             // Then we send ss_target_address+2 to server
             memcpy(ss_target_address, server_data_, Socks5::SOCKS_LENGTH_PORT);
-            LOGI("memcpy 1");
-            hexdump(ss_target_address, 7);
             ss_target_written += Socks5::SOCKS_LENGTH_PORT;
             // We'll determine if it's domain later. So we believe it's IPv4 address here :)
             ss_target_address[ss_target_written++] = Socks5::SOCKS_ADDR_IPV4;
             memcpy(ss_target_address + ss_target_written,
                    server_data_ + Socks5::SOCKS_LENGTH_PORT,
                    Socks5::SOCKS_LENGTH_ADDR_IPV4);
-            LOGI("memcpy 2");
-            hexdump(ss_target_address, 7);
             ss_target_written += Socks5::SOCKS_LENGTH_ADDR_IPV4;
             socks_status_ = Socks5::SOCKS4_WAIT_USERID;
             read_from_socks5_client(1);
@@ -316,9 +320,7 @@ private:
             return;
           case Socks5::SOCKS4_WAIT_USERID: {
             // iterate until NUL
-            LOGI("wait user id %02x", server_data_[0]);
             if (server_data_[0] == 0) {
-              hexdump(ss_target_address, 7);
               if (ss_target_address[3] == 0 &&
                   ss_target_address[4] == 0 &&
                   ss_target_address[5] == 0 &&
@@ -332,6 +334,7 @@ private:
                 socks_status_ = Socks5::SOCKS_ESTABLISHED;
                 memcpy(ss_target_address + ss_target_written, ss_target_address, Socks5::SOCKS_LENGTH_PORT);
                 connect_to_ss_server([=] {
+                  hexdump(ss_target_address + Socks5::SOCKS_LENGTH_PORT, ss_target_written);
                   send_to_ss_server(ss_target_address + Socks5::SOCKS_LENGTH_PORT, ss_target_written,
                     [this, self]() {
                       boost::asio::async_write(server_socket_,
