@@ -118,9 +118,9 @@ public:
     nonce_ = new uint64_t[nonce_uint64_size];
     tag_size_ = cipher->tag_size_;
 
-#ifdef HAVE_SODIUM
-    randombytes_buf(randombytes_buf);
-#elif defined(HAVE_OPENSSL)
+#ifdef SODIUM_FOUND
+    randombytes_buf(salt_, salt_size);
+#elif defined(OPENSSL_FOUND)
     if (!RAND_bytes(salt_, salt_size)) {
       LOGF("server_salt_ generation failed");
     }
@@ -146,7 +146,7 @@ public:
     std::vector<uint8_t> result(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_ + len_msg + tag_size_);
 
     LOGV("message to encrypt");
-    hexdump(message, len_msg);
+    //hexdump(message, len_msg);
 
     // encrypt length
     uint16_t msg_len_msg = htons((uint16_t)len_msg);
@@ -211,7 +211,7 @@ public:
                           reinterpret_cast<const uint8_t *>(nonce_), key_);
     nonce_[0]++;
     LOGV("decrypted data: ");
-    hexdump(result);
+    //hexdump(result);
     return result;
   }
 };

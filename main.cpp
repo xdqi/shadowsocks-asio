@@ -83,7 +83,7 @@ public:
   }
 
   ~session() {
-    LOGV("dtor session %p socket %p\n", this, &server_socket_);
+    LOGV("dtor session %p socket %p", this, &server_socket_);
   }
 
 private:
@@ -109,7 +109,7 @@ private:
 
   void set_up() {
     auto self(shared_from_this());
-    LOGV("session %p socket %p\n", this, &server_socket_);
+    LOGV("session %p socket %p", this, &server_socket_);
 
     read_from_socks5_client(Socks5::SOCKS_LENGTH_CLIENT_HELLO);
   }
@@ -165,7 +165,7 @@ private:
             auto data = decryptor_->decrypt_data(client_data_, length);
             unsigned long long payload_length = length - cipher_->tag_size_;
             LOGV("read_from_ss_server payload %llu bytes: ", payload_length);
-            hexdump(data.data(), payload_length);
+            //hexdump(data.data(), payload_length);
             shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_LENGTH;
 
             boost::asio::async_write(server_socket_, boost::asio::buffer(data, payload_length),
@@ -223,7 +223,7 @@ private:
           return;
         }
         LOGV("async_read_some Received %zu bytes from client: ", length);
-        hexdump(server_data_, length);
+        //hexdump(server_data_, length);
         send_to_ss_server(server_data_, length, [=] {
           read_some_from_socks5_client(Shadowsocks::SHADOWSOCKS_AEAD_PAYLOAD_MAX_LENGTH);
         });
