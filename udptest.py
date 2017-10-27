@@ -23,7 +23,7 @@ def pretty_recv(sock, length):
 
 if __name__ == '__main__':
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.connect(('127.0.0.1', '2333'))
+    s.connect(('127.0.0.1', 2333))
 
     pretty_send(s, b'\x05\x01\x00')
     pretty_recv(s, 2)
