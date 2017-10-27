@@ -21,6 +21,63 @@
 #include <openssl/rand.h>
 #endif
 
+
+namespace Socks5 {
+enum version {
+  SOCKS_VERSION_4 = 4,
+  SOCKS_VERSION_5 = 5
+};
+
+enum status {
+  SOCKS_NEW,              // Client connected and did nothing
+  SOCKS_WAIT_METHODS,     // Client did not send authentication methods
+  SOCKS_WAIT_REQUEST,     // Client did not send request
+  SOCKS_WAIT_DSTADDR,
+  SOCKS_WAIT_DOMAIN,
+  SOCKS_WAIT_DSTPORT,
+  SOCKS_ESTABLISHED,      // Connection Established
+  SOCKS_WAIT_UDP_CLOSE,   // Wait for UDP association stopping
+  SOCKS4_WAIT_DSTPORT_IP, // SOCKS4
+  SOCKS4_WAIT_USERID,     // SOCKS4
+  SOCKS4_WAIT_DOMAIN,     // SOCKS4a
+};
+
+enum authentication {
+  SOCKS_AUTH_NO = 0,
+  SOCKS_AUTH_GSSAPI = 1,
+  SOCKS_AUTH_USERPASS = 2
+};
+
+enum address_type {
+  SOCKS_ADDR_IPV4 = 1,
+  SOCKS_ADDR_DOMAIN = 3,
+  SOCKS_ADDR_IPV6 = 4
+};
+
+enum command {
+  SOCKS_CONNECT = 1,
+  SOCKS_BIND = 2,
+  SOCKS_UDP_ASSOCIATE = 3
+};
+
+enum length {
+  SOCKS_LENGTH_VERSION_NMETHOD = 2,
+  SOCKS_LENGTH_REQUEST_UNTIL_ATYP = 4,
+  SOCKS_LENGTH_ADDR_IPV4 = 4,
+  SOCKS_LENGTH_ADDR_IPV6 = 16,
+  SOCKS_LENGTH_PORT = 2,
+  SOCKS4_LENGTH_DSTPORT_IP = 6
+};
+
+extern const uint8_t server_hello[2];
+extern const uint8_t socks4_server_hello[8];
+extern const uint8_t socks4_rejected[8];
+
+extern const uint8_t reply_success[10];
+extern const uint8_t reply_command_not_supported[10];
+extern const uint8_t reply_address_type_not_supported[10];
+}
+
 template<typename T>
 class Singleton
 {
@@ -165,6 +222,22 @@ public:
     nonce_[0]++;
     return result;
   }
+
+
+  std::vector<uint8_t> encrypt_packet(const uint8_t *message, size_t len_msg) {
+    std::vector<uint8_t> nonce(cipher_->nonce_size_, 0);
+    std::vector<uint8_t> result(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_ + len_msg + tag_size_);
+
+    LOGV("packet to encrypt");
+    //hexdump(message, len_msg);
+
+    // encrypt message
+    cipher_->aead_encrypt(result.data() + Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_, len_msg + tag_size_,
+                          message, len_msg,
+                          nullptr, 0,
+                          nonce.data(), key_);
+    return result;
+  }
 };
 
 
@@ -211,6 +284,19 @@ public:
                           reinterpret_cast<const uint8_t *>(nonce_), key_);
     nonce_[0]++;
     LOGV("decrypted data: ");
+    //hexdump(result);
+    return result;
+  }
+
+  std::vector<uint8_t> decrypt_packet(const uint8_t *ciphertext, size_t len_ciphertext) {
+    std::vector<uint8_t> nonce(cipher_->nonce_size_, 0);
+    std::vector<uint8_t> result(len_ciphertext - tag_size_);
+
+    cipher_->aead_decrypt(result.data(), len_ciphertext - tag_size_,
+                          ciphertext, len_ciphertext,
+                          nullptr, 0,
+                          nonce.data(), key_);
+    LOGV("decrypted packet: ");
     //hexdump(result);
     return result;
   }
