@@ -226,13 +226,13 @@ public:
 
   std::vector<uint8_t> encrypt_packet(const uint8_t *message, size_t len_msg) {
     std::vector<uint8_t> nonce(cipher_->nonce_size_, 0);
-    std::vector<uint8_t> result(Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_ + len_msg + tag_size_);
+    std::vector<uint8_t> result(len_msg + tag_size_);
 
     LOGV("packet to encrypt");
     //hexdump(message, len_msg);
 
     // encrypt message
-    cipher_->aead_encrypt(result.data() + Shadowsocks::SHADOWSOCKS_AEAD_LENGTH_LENGTH + tag_size_, len_msg + tag_size_,
+    cipher_->aead_encrypt(result.data(), len_msg + tag_size_,
                           message, len_msg,
                           nullptr, 0,
                           nonce.data(), key_);

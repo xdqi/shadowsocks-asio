@@ -16,7 +16,7 @@ public:
   TcpSession(boost::asio::io_service &io_service, tcp::socket socket,
              const std::string &server_host, const std::string &server_port,
              const Shadowsocks::AeadCipher *cipher, const std::vector<uint8_t> &psk)
-    : //io_service_(io_service),
+    : io_service_(io_service),
       server_socket_(std::move(socket)),
       client_socket_(io_service),
       resolver_(io_service),
@@ -31,9 +31,7 @@ public:
       udp_server_(nullptr) {
   }
 
-  void start() {
-    set_up();
-  }
+  void start();
 
   ~TcpSession();
 
@@ -53,7 +51,7 @@ private:
 
   void read_from_socks5_client(size_t read_len);
 
-  //std::reference_wrapper<boost::asio::io_service> io_service_;
+  std::reference_wrapper<boost::asio::io_service> io_service_;
 
   tcp::socket server_socket_;
   tcp::socket client_socket_;
@@ -85,6 +83,7 @@ public:
     client_socket_(io_service, udp::endpoint(udp::v4(), 0)),
     server_endpoint_(boost::asio::ip::address::from_string("127.0.0.1"), 23333),
     session_(session) {
+    LOGI("UDP server %p created", this);
     read_from_client();
     read_from_ss_server();
   }
@@ -94,6 +93,7 @@ public:
   }
 
   ~UdpServer() {
+    LOGI("UDP server %p destroyed", this);
     server_socket_.close();  // cancel all operations and stop server
     client_socket_.close();
   }
@@ -116,5 +116,7 @@ private:
   uint8_t client_data_[server_max_length];
   TcpSession *session_;
 };
+
+#include "local.cpp" // have to include implementation, wtf
 
 #endif //SHADOWSOCKS_LOCAL_H

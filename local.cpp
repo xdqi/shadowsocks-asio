@@ -1,29 +1,41 @@
+#ifndef SHADOWSOCKS_LOCAL_CPP
+#define SHADOWSOCKS_LOCAL_CPP
+
 #include "local.h"
 #include "crypto.h"
 #include <iostream>
 
-void UdpServer::read_from_client() {
+inline void UdpServer::read_from_client() {
   server_socket_.async_receive_from(boost::asio::buffer(server_data_, client_max_length), client_endpoint_,
     [this](boost::system::error_code ec, std::size_t length) {
       if (ec) {
         std::cerr << "UDP Server async_receive_from: " << ec.message() << std::endl;
+        return;
+      }
+      if (server_data_[2]) {  // FRAG != 0
+        LOGW("UDP server do not support fragment");
+        return;
       }
       send_to_ss_server(server_data_ + 3, length - 3);
     }
   );
 }
 
-void UdpServer::read_from_ss_server() {
+inline void UdpServer::read_from_ss_server() {
   client_socket_.async_receive_from(boost::asio::buffer(client_data_, server_max_length), server_endpoint_,
     [this](boost::system::error_code ec, std::size_t length) {
       if (ec) {
         std::cerr << "UDP Client async_receive_from: " << ec.message() << std::endl;
+        return;
       }
 
       Shadowsocks::AeadDecryptor decryptor(session_->cipher_, session_->psk_.data(), client_data_);
       auto message = decryptor.decrypt_packet(client_data_ + session_->cipher_->salt_size_, length - session_->cipher_->salt_size_);
 
-      server_socket_.async_send_to(boost::asio::buffer(message), client_endpoint_,
+      server_socket_.async_send_to(std::vector<boost::asio::const_buffer>{
+                                     boost::asio::buffer(std::vector<uint8_t>{0, 0, 0}),  // 2-byte RSV + 1-byte FRAG
+                                     boost::asio::buffer(message)
+                                   }, client_endpoint_,
         [this](boost::system::error_code /*ec*/, std::size_t /*bytes_sent*/) {
           read_from_ss_server();
         }
@@ -32,30 +44,37 @@ void UdpServer::read_from_ss_server() {
   );
 }
 
-void UdpServer::send_to_ss_server(const uint8_t *data, size_t length) {
+inline void UdpServer::send_to_ss_server(const uint8_t *data, size_t length) {
   Shadowsocks::AeadEncryptor encryptor(session_->cipher_, session_->psk_.data());
   auto ciphertext = encryptor.encrypt_packet(data, length);
 
-  client_socket_.async_send_to(boost::asio::buffer(ciphertext), server_endpoint_,
+  client_socket_.async_send_to(std::vector<boost::asio::const_buffer>{
+                                 boost::asio::buffer(encryptor.salt(), session_->cipher_->salt_size_),
+                                 boost::asio::buffer(ciphertext),
+                               }, server_endpoint_,
     [this](boost::system::error_code /*ec*/, std::size_t /*bytes_sent*/) {
       read_from_client();
     }
   );
 }
 
-TcpSession::~TcpSession() {
+inline TcpSession::~TcpSession() {
   delete udp_server_;
   LOGV("dtor tcp session %p socket %p", this, &server_socket_);
 }
 
-void TcpSession::set_up() {
+inline void TcpSession::start() {
+  set_up();
+}
+
+inline void TcpSession::set_up() {
   auto self(shared_from_this());
   LOGV("tcp session %p socket %p", this, &server_socket_);
 
   read_from_socks5_client(Socks5::SOCKS_LENGTH_VERSION_NMETHOD);
 }
 
-void TcpSession::connect_to_ss_server(const std::function<void ()> &callback) {
+inline void TcpSession::connect_to_ss_server(const std::function<void ()> &callback) {
   auto self(shared_from_this());
   resolver_.async_resolve(query_,
     [this, self, callback](const boost::system::error_code& resolve_error_code, tcp::resolver::iterator iter) {
@@ -77,7 +96,7 @@ void TcpSession::connect_to_ss_server(const std::function<void ()> &callback) {
 
 }
 
-void TcpSession::read_from_ss_server(size_t read_len) {
+inline void TcpSession::read_from_ss_server(size_t read_len) {
   auto self(shared_from_this());
   boost::asio::async_read(client_socket_, boost::asio::buffer(client_data_, read_len),
     [this, self](const boost::system::error_code& read_error_code, std::size_t length) {
@@ -125,7 +144,7 @@ void TcpSession::read_from_ss_server(size_t read_len) {
   );
 }
 
-void TcpSession::init_connection_with_ss_server(const std::function<void ()> &callback) {
+inline void TcpSession::init_connection_with_ss_server(const std::function<void ()> &callback) {
   auto self(shared_from_this());
   encryptor_ = new Shadowsocks::AeadEncryptor(cipher_, psk_.data());
 
@@ -140,7 +159,7 @@ void TcpSession::init_connection_with_ss_server(const std::function<void ()> &ca
   );
 }
 
-void TcpSession::send_to_ss_server(const uint8_t *content, size_t length, const std::function<void ()> &callback) {
+inline void TcpSession::send_to_ss_server(const uint8_t *content, size_t length, const std::function<void ()> &callback) {
   auto self(shared_from_this());
   auto ciphertext = encryptor_->encrypt_data(content, length);
 
@@ -155,7 +174,7 @@ void TcpSession::send_to_ss_server(const uint8_t *content, size_t length, const 
   );
 }
 
-void TcpSession::read_some_from_socks5_client(size_t read_len) {
+inline void TcpSession::read_some_from_socks5_client(size_t read_len) {
   auto self(shared_from_this());
   server_socket_.async_read_some(boost::asio::buffer(server_data_, read_len),
     [this, self](const boost::system::error_code& read_error_code, std::size_t length) {
@@ -172,15 +191,10 @@ void TcpSession::read_some_from_socks5_client(size_t read_len) {
   );
 }
 
-void TcpSession::read_from_socks5_client(size_t read_len) {
+inline void TcpSession::read_from_socks5_client(size_t read_len) {
   auto self(shared_from_this());
-  LOGV("buf %p", server_data_);
-  hexdump(server_data_, read_len);
-  LOGV("point z");
-  uint8_t buf[1 << 16];
-  boost::asio::async_read(server_socket_, boost::asio::buffer(buf, read_len),
+  boost::asio::async_read(server_socket_, boost::asio::buffer(server_data_, read_len),
     [this, self](const boost::system::error_code& read_error_code, std::size_t length) {
-      LOGV("point a");
       if (read_error_code) {
         std::cerr << "from client async_read: " << read_error_code.message() << std::endl;
         return;
@@ -335,9 +349,10 @@ void TcpSession::read_from_socks5_client(size_t read_len) {
                   }
                 }
               );
-              socks_command_ = (Socks5::command) server_data_[1];
               return;
             }
+
+            socks_command_ = (Socks5::command) server_data_[1];  // set socks command to connect
 
             int ss_header_length = 0;
             switch (server_data_[3]) {
@@ -400,8 +415,9 @@ void TcpSession::read_from_socks5_client(size_t read_len) {
           hexdump(ss_target_address, ss_target_written);
 
           if (socks_command_ == Socks5::SOCKS_UDP_ASSOCIATE) {
+            LOGI("UDP request received");
             socks_status_ = Socks5::SOCKS_WAIT_UDP_CLOSE;
-            //udp_server_ = new UdpServer(io_service_, this);
+            udp_server_ = new UdpServer(io_service_, this);
 
             uint16_t port = htons(udp_server_->listening_port());
             uint8_t response[sizeof(Socks5::reply_success)];
@@ -423,6 +439,7 @@ void TcpSession::read_from_socks5_client(size_t read_len) {
             return;
           }
 
+          LOGI("TCP request received");
           socks_status_ = Socks5::SOCKS_ESTABLISHED;
 
           connect_to_ss_server([=] {
@@ -455,3 +472,5 @@ void TcpSession::read_from_socks5_client(size_t read_len) {
     }
   );
 }
+
+#endif
