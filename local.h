@@ -81,7 +81,7 @@ public:
   UdpServer(boost::asio::io_service &io_service, TcpSession *session) :
     server_socket_(io_service, udp::endpoint(udp::v4(), 0)),
     client_socket_(io_service, udp::endpoint(udp::v4(), 0)),
-    server_endpoint_(boost::asio::ip::address::from_string("127.0.0.1"), 23333),
+    server_endpoint_(boost::asio::ip::address::from_string("127.0.0.1"), 23333),  // TODO: replace it
     session_(session) {
     LOGI("UDP server %p created", this);
     read_from_client();
@@ -110,10 +110,10 @@ private:
   udp::endpoint client_endpoint_;
   udp::endpoint server_endpoint_;
   enum {
-    client_max_length = 1024, server_max_length = 1484
+    max_length = 9000  // jumbo frame
   };
-  uint8_t server_data_[client_max_length];
-  uint8_t client_data_[server_max_length];
+  uint8_t server_data_[max_length];
+  uint8_t client_data_[max_length];
   TcpSession *session_;
 };
 

@@ -33,7 +33,7 @@ if __name__ == '__main__':
     pretty_recv(s, 2)
 
     pretty_send(s, b'\x05\x03\x00\x01\x08\x08\x08\x08\x00\x35')
-    c = pretty_recv(s, 10)
+    c = pretty_recv(s, 1024)
 
     u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     u.connect(('127.0.0.1', c[8] * 256 + c[9]))

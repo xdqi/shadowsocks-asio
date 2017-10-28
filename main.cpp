@@ -24,7 +24,7 @@ public:
             const std::string& server_host, const std::string& server_port,
             const std::string &cipher, const std::string &password)
     : io_service_(io_service),
-      acceptor_(io_service, tcp::endpoint(boost::asio::ip::address::from_string("127.0.0.1"), listen_port)),
+      acceptor_(io_service, tcp::endpoint(boost::asio::ip::address_v6::any(), listen_port)),
       socket_(io_service),
       server_host_(server_host),
       server_port_(server_port),

@@ -6,7 +6,7 @@
 #include <iostream>
 
 inline void UdpServer::read_from_client() {
-  server_socket_.async_receive_from(boost::asio::buffer(server_data_, client_max_length), client_endpoint_,
+  server_socket_.async_receive_from(boost::asio::buffer(server_data_, max_length), client_endpoint_,
     [this](boost::system::error_code ec, std::size_t length) {
       if (ec) {
         std::cerr << "UDP Server async_receive_from: " << ec.message() << std::endl;
@@ -22,7 +22,7 @@ inline void UdpServer::read_from_client() {
 }
 
 inline void UdpServer::read_from_ss_server() {
-  client_socket_.async_receive_from(boost::asio::buffer(client_data_, server_max_length), server_endpoint_,
+  client_socket_.async_receive_from(boost::asio::buffer(client_data_, max_length), server_endpoint_,
     [this](boost::system::error_code ec, std::size_t length) {
       if (ec) {
         std::cerr << "UDP Client async_receive_from: " << ec.message() << std::endl;
@@ -420,13 +420,30 @@ inline void TcpSession::read_from_socks5_client(size_t read_len) {
             udp_server_ = new UdpServer(io_service_, this);
 
             uint16_t port = htons(udp_server_->listening_port());
-            uint8_t response[sizeof(Socks5::reply_success)];
+            uint8_t response[sizeof(Socks5::reply_success) + Socks5::SOCKS_LENGTH_ADDR_IPV6 - Socks5::SOCKS_LENGTH_ADDR_IPV4];
+            size_t response_size = sizeof(Socks5::reply_success);
             memcpy(response, Socks5::reply_success, sizeof(Socks5::reply_success));
-            memcpy(response + 4, "\x7f\x00\x00\x01", Socks5::SOCKS_LENGTH_ADDR_IPV4);
-            memcpy(response + 8, &port, Socks5::SOCKS_LENGTH_PORT);
+
+            const auto &endpoint = server_socket_.local_endpoint();
+            const auto &address = endpoint.address();
+            if (address.is_v4()) {  // IPv4 server got IPv4 address
+              response[3] = Socks5::SOCKS_ADDR_IPV4;
+              memcpy(response + 4, address.to_v4().to_bytes().data(), Socks5::SOCKS_LENGTH_ADDR_IPV4);
+              memcpy(response + 4 + Socks5::SOCKS_LENGTH_ADDR_IPV4, &port, Socks5::SOCKS_LENGTH_PORT);
+            } else if (address.is_v6() && (address.to_v6().is_v4_mapped() || address.to_v6().is_v4_compatible())) {
+              // IPv6 server got IPv4-mapped address
+              response[3] = Socks5::SOCKS_ADDR_IPV4;
+              memcpy(response + 4, address.to_v6().to_v4().to_bytes().data(), Socks5::SOCKS_LENGTH_ADDR_IPV4);
+              memcpy(response + 4 + Socks5::SOCKS_LENGTH_ADDR_IPV4, &port, Socks5::SOCKS_LENGTH_PORT);
+            } else {  // IPv6 server got IPv6 address
+              response[3] = Socks5::SOCKS_ADDR_IPV6;
+              memcpy(response + 4, address.to_v6().to_bytes().data(), Socks5::SOCKS_LENGTH_ADDR_IPV6);
+              memcpy(response + 4 + Socks5::SOCKS_LENGTH_ADDR_IPV6, &port, Socks5::SOCKS_LENGTH_PORT);
+              response_size += Socks5::SOCKS_LENGTH_ADDR_IPV6 - Socks5::SOCKS_LENGTH_ADDR_IPV4;
+            }
 
             boost::asio::async_write(server_socket_,
-              boost::asio::buffer(response, sizeof(response)),
+              boost::asio::buffer(response, response_size),
                 [this, self](const boost::system::error_code &write_error_code, std::size_t /*length*/) {
                   if (write_error_code) {
                     std::cerr << "to client async_write: SOCKS5 reply failed "
