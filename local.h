@@ -14,13 +14,12 @@ class TcpSession : public std::enable_shared_from_this<TcpSession> {
 
 public:
   TcpSession(boost::asio::io_service &io_service, tcp::socket socket,
-             const std::string &server_host, const std::string &server_port,
+             const tcp::resolver::iterator server_addresses,
              const Shadowsocks::AeadCipher *cipher, const std::vector<uint8_t> &psk)
     : io_service_(io_service),
       server_socket_(std::move(socket)),
       client_socket_(io_service),
-      resolver_(io_service),
-      query_(server_host, server_port),
+      server_addresses_(server_addresses),
       socks_status_(Socks5::SOCKS_NEW),
       shadowsocks_status_(Shadowsocks::SHADOWSOCKS_NEW),
       server_data_{0},
@@ -56,8 +55,7 @@ private:
   tcp::socket server_socket_;
   tcp::socket client_socket_;
 
-  tcp::resolver resolver_;
-  tcp::resolver::query query_;
+  tcp::resolver::iterator server_addresses_;
 
   enum Socks5::status socks_status_;
   enum Socks5::command socks_command_;
@@ -73,16 +71,16 @@ private:
   Shadowsocks::AeadEncryptor *encryptor_;
   Shadowsocks::AeadDecryptor *decryptor_;
   UdpServer *udp_server_;
-
 };
 
 class UdpServer {
 public:
-  UdpServer(boost::asio::io_service &io_service, TcpSession *session) :
-    server_socket_(io_service, udp::endpoint(udp::v4(), 0)),
-    client_socket_(io_service, udp::endpoint(udp::v4(), 0)),
-    server_endpoint_(boost::asio::ip::address::from_string("127.0.0.1"), 23333),  // TODO: replace it
-    session_(session) {
+  UdpServer(boost::asio::io_service &io_service, TcpSession *session)
+    : session_(session) ,
+      server_endpoint_(session_->server_addresses_->endpoint().address(),
+                       session_->server_addresses_->endpoint().port()),
+      server_socket_(io_service, udp::endpoint(udp::v4(), 0)),
+      client_socket_(io_service, udp::endpoint(udp::v4(), 0)) {
     LOGI("UDP server %p created", this);
     read_from_client();
     read_from_ss_server();
@@ -105,16 +103,16 @@ private:
 
   void send_to_ss_server(const uint8_t *data, size_t length);
 
-  udp::socket server_socket_;
-  udp::socket client_socket_;
+  TcpSession *session_;
   udp::endpoint client_endpoint_;
   udp::endpoint server_endpoint_;
+  udp::socket server_socket_;
+  udp::socket client_socket_;
   enum {
     max_length = 9000  // jumbo frame
   };
   uint8_t server_data_[max_length];
   uint8_t client_data_[max_length];
-  TcpSession *session_;
 };
 
 #include "local.cpp" // have to include implementation, wtf

@@ -21,13 +21,12 @@ using boost::asio::ip::udp;
 class TcpServer {
 public:
   TcpServer(boost::asio::io_service& io_service, uint16_t listen_port,
-            const std::string& server_host, const std::string& server_port,
+            const tcp::resolver::iterator &server_addresses,
             const std::string &cipher, const std::string &password)
     : io_service_(io_service),
       acceptor_(io_service, tcp::endpoint(boost::asio::ip::address_v6::any(), listen_port)),
       socket_(io_service),
-      server_host_(server_host),
-      server_port_(server_port),
+      server_addresses_(server_addresses),
       cipher_(Shadowsocks::AeadCipher::get_cipher(cipher)),
       psk_(password_to_key((const uint8_t *) password.c_str(), password.length(), cipher_->key_size_)) {
       do_accept();
@@ -41,7 +40,7 @@ private:
           std::cerr << "Server async_accept: " << ec.message() << std::endl;
         }
 
-        std::make_shared<TcpSession>(io_service_, std::move(socket_), server_host_, server_port_, cipher_, psk_)->start();
+        std::make_shared<TcpSession>(io_service_, std::move(socket_), server_addresses_, cipher_, psk_)->start();
 
         // execute regardless of failed
         do_accept();
@@ -51,8 +50,7 @@ private:
   std::reference_wrapper<boost::asio::io_service> io_service_;
   tcp::acceptor acceptor_;
   tcp::socket socket_;
-  std::string server_host_;
-  std::string server_port_;
+  tcp::resolver::iterator server_addresses_;
   const Shadowsocks::AeadCipher *cipher_;
   std::vector<uint8_t> psk_;
 };
@@ -68,7 +66,17 @@ int main(int argc, char* argv[]) {
 
     boost::asio::io_service io_service;
 
-    TcpServer s(io_service, std::atoi(argv[1]), argv[2], argv[3], argv[4], argv[5]);
+    LOGI("Resolving server address ...");
+    boost::system::error_code resolve_error;
+    tcp::resolver resolver(io_service);
+    tcp::resolver::query query(argv[2], argv[3]);
+    auto server_addresses = resolver.resolve(query, resolve_error);
+    if (resolve_error) {
+      LOGE("Unable to resolve ss server addresses %s:%s", argv[2], argv[3]);
+      exit(-1);
+    }
+
+    TcpServer s(io_service, std::atoi(argv[1]), server_addresses, argv[4], argv[5]);
 
     LOGI("Listening on port %d", std::atoi(argv[1]));
     io_service.run();

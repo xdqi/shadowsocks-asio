@@ -76,24 +76,16 @@ inline void TcpSession::set_up() {
 
 inline void TcpSession::connect_to_ss_server(const std::function<void ()> &callback) {
   auto self(shared_from_this());
-  resolver_.async_resolve(query_,
-    [this, self, callback](const boost::system::error_code& resolve_error_code, tcp::resolver::iterator iter) {
-      if (resolve_error_code) {
-        LOGE("to ss-server async_resolve %s", resolve_error_code.message().c_str());
+  boost::asio::async_connect(client_socket_, server_addresses_,
+    [this, self, callback](const boost::system::error_code& connect_error_code, tcp::resolver::iterator) {
+      if (connect_error_code) {
+        std::cerr << "to ss-server async_connect: " << connect_error_code.message() << std::endl;
         return;
       }
-      boost::asio::async_connect(client_socket_, iter,
-        [this, self, callback](const boost::system::error_code& connect_error_code, tcp::resolver::iterator) {
-          if (connect_error_code) {
-            std::cerr << "to ss-server async_connect: " << connect_error_code.message() << std::endl;
-            return;
-          }
-          LOGV("connected to ss-server");
-          read_from_ss_server(cipher_->salt_size_);
-          init_connection_with_ss_server(callback);
-      });
-    });
-
+      LOGV("connected to ss-server");
+      read_from_ss_server(cipher_->salt_size_);
+      init_connection_with_ss_server(callback);
+  });
 }
 
 inline void TcpSession::read_from_ss_server(size_t read_len) {
