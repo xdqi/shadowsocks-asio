@@ -381,7 +381,7 @@ public:
   AeadCipher(key_size, salt_size, nonce_size, tag_size), cipher_(cipher) {}
 
 protected:
-  void aead_encrypt(uint8_t *ciphertext, size_t len_ciphertext,
+  void aead_encrypt(uint8_t *ciphertext, size_t /* len_ciphertext */,
                     const uint8_t *message, size_t len_message,
                     const uint8_t *ad, size_t len_ad,
                     const uint8_t *nonce, const uint8_t *key) const {
@@ -444,7 +444,7 @@ protected:
   }
 
   void aead_decrypt(uint8_t *message, size_t len_message,
-                    const uint8_t *ciphertext, size_t len_ciphertext,
+                    const uint8_t *ciphertext, size_t /* len_ciphertext */,
                     const uint8_t *ad, size_t len_ad,
                     const uint8_t *nonce, const uint8_t *key) const {
     EVP_CIPHER_CTX *ctx;

@@ -16,7 +16,7 @@ public:
   TcpSession(boost::asio::io_service &io_service, tcp::socket socket,
              const std::string &server_host, const std::string &server_port,
              const Shadowsocks::AeadCipher *cipher, const std::vector<uint8_t> &psk)
-    : io_service_(io_service),
+    : //io_service_(io_service),
       server_socket_(std::move(socket)),
       client_socket_(io_service),
       resolver_(io_service),
@@ -38,7 +38,22 @@ public:
   ~TcpSession();
 
 private:
-  std::reference_wrapper<boost::asio::io_service> io_service_;
+
+  void set_up();
+
+  void connect_to_ss_server(const std::function<void()> &callback);
+
+  void read_from_ss_server(size_t read_len);
+
+  void init_connection_with_ss_server(const std::function<void()> &callback);
+
+  void send_to_ss_server(const uint8_t *content, size_t length, const std::function<void()> &callback);
+
+  void read_some_from_socks5_client(size_t read_len);
+
+  void read_from_socks5_client(size_t read_len);
+
+  //std::reference_wrapper<boost::asio::io_service> io_service_;
 
   tcp::socket server_socket_;
   tcp::socket client_socket_;
@@ -55,25 +70,12 @@ private:
   uint8_t ss_target_address[Shadowsocks::SHADOWSOCKS_HEADER_MAX_LENGTH];
   int ss_target_written = 0;
 
-  std::vector<uint8_t> psk_;
   const Shadowsocks::AeadCipher *cipher_;
+  std::vector<uint8_t> psk_;
   Shadowsocks::AeadEncryptor *encryptor_;
   Shadowsocks::AeadDecryptor *decryptor_;
   UdpServer *udp_server_;
 
-  void set_up();
-
-  void connect_to_ss_server(const std::function<void()> &callback);
-
-  void read_from_ss_server(size_t read_len);
-
-  void init_connection_with_ss_server(const std::function<void()> &callback);
-
-  void send_to_ss_server(const uint8_t *content, size_t length, const std::function<void()> &callback);
-
-  void read_some_from_socks5_client(size_t read_len);
-
-  void read_from_socks5_client(size_t read_len);
 };
 
 class UdpServer {

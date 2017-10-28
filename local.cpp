@@ -110,7 +110,7 @@ void TcpSession::read_from_ss_server(size_t read_len) {
           shadowsocks_status_ = Shadowsocks::SHADOWSOCKS_WAIT_LENGTH;
 
           boost::asio::async_write(server_socket_, boost::asio::buffer(data, payload_length),
-            [this, self](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
+            [this, self](const boost::system::error_code& write_error_code, std::size_t /* wrote_len */) {
               if (write_error_code) {
                 std::cerr << "to server async_write: " << write_error_code.message() << std::endl;
                 return;
@@ -130,7 +130,7 @@ void TcpSession::init_connection_with_ss_server(const std::function<void ()> &ca
   encryptor_ = new Shadowsocks::AeadEncryptor(cipher_, psk_.data());
 
   boost::asio::async_write(client_socket_, boost::asio::buffer(encryptor_->salt(), cipher_->salt_size_),
-    [this, self, callback](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
+    [this, self, callback](const boost::system::error_code& write_error_code, std::size_t /* wrote_len */) {
       if (write_error_code) {
         std::cerr << "to server async_write: " << write_error_code.message() << std::endl;
         return;
@@ -145,7 +145,7 @@ void TcpSession::send_to_ss_server(const uint8_t *content, size_t length, const 
   auto ciphertext = encryptor_->encrypt_data(content, length);
 
   boost::asio::async_write(client_socket_, boost::asio::buffer(ciphertext),
-    [this, self, callback](const boost::system::error_code& write_error_code, std::size_t wrote_len) {
+    [this, self, callback](const boost::system::error_code& write_error_code, std::size_t /* wrote_len */) {
       if (write_error_code) {
         std::cerr << "to server async_write: " << write_error_code.message() << std::endl;
         return;
@@ -176,10 +176,13 @@ void TcpSession::read_from_socks5_client(size_t read_len) {
   auto self(shared_from_this());
   LOGV("buf %p", server_data_);
   hexdump(server_data_, read_len);
-  boost::asio::async_read(server_socket_, boost::asio::buffer(server_data_, read_len),
+  LOGV("point z");
+  uint8_t buf[1 << 16];
+  boost::asio::async_read(server_socket_, boost::asio::buffer(buf, read_len),
     [this, self](const boost::system::error_code& read_error_code, std::size_t length) {
+      LOGV("point a");
       if (read_error_code) {
-        //std::cerr << "from client async_read: " << read_error_code.message() << std::endl;
+        std::cerr << "from client async_read: " << read_error_code.message() << std::endl;
         return;
       }
       switch (socks_status_) {
@@ -210,7 +213,7 @@ void TcpSession::read_from_socks5_client(size_t read_len) {
           return;
         case Socks5::SOCKS_WAIT_METHODS: {
           bool have_method = false;
-          for (int i = 0; i < length; ++i) {
+          for (size_t i = 0; i < length; ++i) {
             if (server_data_[i] == Socks5::SOCKS_AUTH_NO) {
               have_method = true;
               break;
@@ -398,7 +401,7 @@ void TcpSession::read_from_socks5_client(size_t read_len) {
 
           if (socks_command_ == Socks5::SOCKS_UDP_ASSOCIATE) {
             socks_status_ = Socks5::SOCKS_WAIT_UDP_CLOSE;
-            udp_server_ = new UdpServer(io_service_, this);
+            //udp_server_ = new UdpServer(io_service_, this);
 
             uint16_t port = htons(udp_server_->listening_port());
             uint8_t response[sizeof(Socks5::reply_success)];

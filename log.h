@@ -3,10 +3,16 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <cctype>
 #include <vector>
 
-#define LOG(level, fmt, ...) do {fprintf(stderr, "[%7s] [%s:%d] ", #level, __func__, __LINE__); fprintf(stderr, fmt, ##__VA_ARGS__); fprintf(stderr, "\n"); } while (false)
+inline const char *get_short_filename(const char *full_path) {
+  static size_t start = strlen(__FILE__) - strlen("log.h");
+  return full_path + start;
+}
+
+#define LOG(level, fmt, ...) do {fprintf(stderr, "[%7s] [%s:%d] " fmt "\n", #level, get_short_filename(__FILE__), __LINE__, ##__VA_ARGS__); } while (false)
 
 #define LOGD(fmt, ...) LOG(debug, fmt, ##__VA_ARGS__)
 #define LOGV(fmt, ...) LOG(verbose, fmt, ##__VA_ARGS__)

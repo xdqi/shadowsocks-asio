@@ -23,13 +23,13 @@ public:
   TcpServer(boost::asio::io_service& io_service, uint16_t listen_port,
             const std::string& server_host, const std::string& server_port,
             const std::string &cipher, const std::string &password)
-    : acceptor_(io_service, tcp::endpoint(boost::asio::ip::address::from_string("127.0.0.1"), listen_port)),
+    : io_service_(io_service),
+      acceptor_(io_service, tcp::endpoint(boost::asio::ip::address::from_string("127.0.0.1"), listen_port)),
       socket_(io_service),
-      io_service_(io_service),
-      cipher_(Shadowsocks::AeadCipher::get_cipher(cipher)),
-      psk_(password_to_key((const uint8_t *) password.c_str(), password.length(), cipher_->key_size_)),
       server_host_(server_host),
-      server_port_(server_port) {
+      server_port_(server_port),
+      cipher_(Shadowsocks::AeadCipher::get_cipher(cipher)),
+      psk_(password_to_key((const uint8_t *) password.c_str(), password.length(), cipher_->key_size_)) {
       do_accept();
   }
 
