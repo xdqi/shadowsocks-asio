@@ -22,12 +22,12 @@ public:
       server_addresses_(server_addresses),
       socks_status_(Socks5::SOCKS_NEW),
       shadowsocks_status_(Shadowsocks::SHADOWSOCKS_NEW),
-      server_data_{0},
-      client_data_{0},
-      ss_target_address{0},
       cipher_(cipher),
       psk_(psk),
       udp_server_(nullptr) {
+    memset(server_data_, 0, sizeof(server_data_));
+    memset(client_data_, 0, sizeof(client_data_));
+    memset(ss_target_address, 0, sizeof(ss_target_address));
   }
 
   void start();

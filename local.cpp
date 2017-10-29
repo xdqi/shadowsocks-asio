@@ -393,6 +393,7 @@ inline void TcpSession::read_from_socks5_client(size_t read_len) {
         case Socks5::SOCKS_WAIT_DOMAIN: {
           socks_status_ = Socks5::SOCKS_WAIT_DSTPORT;
           memcpy(ss_target_address + ss_target_written, server_data_, length);
+          server_data_[length] = '\0';
           LOGI("Received connection to domain %s", reinterpret_cast<const char *>(server_data_));
           ss_target_written += length;
           read_from_socks5_client(Socks5::SOCKS_LENGTH_PORT);

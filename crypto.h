@@ -3,7 +3,11 @@
 
 #include "log.h"
 
+#ifdef _WIN32
+#include <Winsock2.h>
+#else
 #include <arpa/inet.h>
+#endif
 #include <unordered_map>
 #include <string>
 #include <vector>
