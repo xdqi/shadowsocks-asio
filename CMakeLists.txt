@@ -15,10 +15,15 @@ endif()
 find_package(OpenSSL)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DOPENSSL_FOUND=${OPENSSL_FOUND}")
 
+include(packaging/Findsodium.cmake)
+
 add_executable(shadowsocks ${SOURCE_FILES})
 
+include_directories(${Boost_INCLUDE_DIRS})
 include_directories(${OPENSSL_INCLUDE_DIR})
+include_directories(${sodium_INCLUDE_DIR})
+
 target_link_libraries(shadowsocks ${Boost_LIBRARIES})
 target_link_libraries(shadowsocks ${CMAKE_THREAD_LIBS_INIT})
 target_link_libraries(shadowsocks ${OPENSSL_CRYPTO_LIBRARY})
-target_link_libraries(shadowsocks sodium)
+target_link_libraries(shadowsocks ${sodium_LIBRARY_RELEASE})
