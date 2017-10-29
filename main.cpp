@@ -1,5 +1,3 @@
-// #define BOOST_ASIO_ENABLE_HANDLER_TRACKING
-
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>

@@ -5,7 +5,7 @@
 #include "crypto.h"
 #include <iostream>
 
-inline void UdpServer::read_from_client() {
+void UdpServer::read_from_client() {
   server_socket_.async_receive_from(boost::asio::buffer(server_data_, max_length), client_endpoint_,
     [this](boost::system::error_code ec, std::size_t length) {
       if (ec) {
@@ -21,7 +21,7 @@ inline void UdpServer::read_from_client() {
   );
 }
 
-inline void UdpServer::read_from_ss_server() {
+void UdpServer::read_from_ss_server() {
   client_socket_.async_receive_from(boost::asio::buffer(client_data_, max_length), server_endpoint_,
     [this](boost::system::error_code ec, std::size_t length) {
       if (ec) {
@@ -44,7 +44,7 @@ inline void UdpServer::read_from_ss_server() {
   );
 }
 
-inline void UdpServer::send_to_ss_server(const uint8_t *data, size_t length) {
+void UdpServer::send_to_ss_server(const uint8_t *data, size_t length) {
   Shadowsocks::AeadEncryptor encryptor(session_->cipher_, session_->psk_.data());
   auto ciphertext = encryptor.encrypt_packet(data, length);
 
@@ -58,23 +58,23 @@ inline void UdpServer::send_to_ss_server(const uint8_t *data, size_t length) {
   );
 }
 
-inline TcpSession::~TcpSession() {
+TcpSession::~TcpSession() {
   delete udp_server_;
   LOGV("dtor tcp session %p socket %p", this, &server_socket_);
 }
 
-inline void TcpSession::start() {
+void TcpSession::start() {
   set_up();
 }
 
-inline void TcpSession::set_up() {
+void TcpSession::set_up() {
   auto self(shared_from_this());
   LOGV("tcp session %p socket %p", this, &server_socket_);
 
   read_from_socks5_client(Socks5::SOCKS_LENGTH_VERSION_NMETHOD);
 }
 
-inline void TcpSession::connect_to_ss_server(const std::function<void ()> &callback) {
+void TcpSession::connect_to_ss_server(const std::function<void ()> &callback) {
   auto self(shared_from_this());
   boost::asio::async_connect(client_socket_, server_addresses_,
     [this, self, callback](const boost::system::error_code& connect_error_code, tcp::resolver::iterator) {
@@ -88,7 +88,7 @@ inline void TcpSession::connect_to_ss_server(const std::function<void ()> &callb
   });
 }
 
-inline void TcpSession::read_from_ss_server(size_t read_len) {
+void TcpSession::read_from_ss_server(size_t read_len) {
   auto self(shared_from_this());
   boost::asio::async_read(client_socket_, boost::asio::buffer(client_data_, read_len),
     [this, self](const boost::system::error_code& read_error_code, std::size_t length) {
@@ -136,7 +136,7 @@ inline void TcpSession::read_from_ss_server(size_t read_len) {
   );
 }
 
-inline void TcpSession::init_connection_with_ss_server(const std::function<void ()> &callback) {
+void TcpSession::init_connection_with_ss_server(const std::function<void ()> &callback) {
   auto self(shared_from_this());
   encryptor_ = new Shadowsocks::AeadEncryptor(cipher_, psk_.data());
 
@@ -151,7 +151,7 @@ inline void TcpSession::init_connection_with_ss_server(const std::function<void 
   );
 }
 
-inline void TcpSession::send_to_ss_server(const uint8_t *content, size_t length, const std::function<void ()> &callback) {
+void TcpSession::send_to_ss_server(const uint8_t *content, size_t length, const std::function<void ()> &callback) {
   auto self(shared_from_this());
   auto ciphertext = encryptor_->encrypt_data(content, length);
 
@@ -166,7 +166,7 @@ inline void TcpSession::send_to_ss_server(const uint8_t *content, size_t length,
   );
 }
 
-inline void TcpSession::read_some_from_socks5_client(size_t read_len) {
+void TcpSession::read_some_from_socks5_client(size_t read_len) {
   auto self(shared_from_this());
   server_socket_.async_read_some(boost::asio::buffer(server_data_, read_len),
     [this, self](const boost::system::error_code& read_error_code, std::size_t length) {
@@ -183,7 +183,7 @@ inline void TcpSession::read_some_from_socks5_client(size_t read_len) {
   );
 }
 
-inline void TcpSession::read_from_socks5_client(size_t read_len) {
+void TcpSession::read_from_socks5_client(size_t read_len) {
   auto self(shared_from_this());
   boost::asio::async_read(server_socket_, boost::asio::buffer(server_data_, read_len),
     [this, self](const boost::system::error_code& read_error_code, std::size_t length) {

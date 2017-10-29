@@ -115,6 +115,4 @@ private:
   uint8_t client_data_[max_length];
 };
 
-#include "local.cpp" // have to include implementation, wtf
-
 #endif //SHADOWSOCKS_LOCAL_H
