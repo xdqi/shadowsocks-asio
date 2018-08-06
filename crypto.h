@@ -25,6 +25,13 @@
 #include <openssl/rand.h>
 #endif
 
+#ifdef CRYPTOPP_FOUND
+#include <cryptopp/aes.h>
+#include <cryptopp/gcm.h>
+#include <cryptopp/filters.h>
+#include <cryptopp/chacha.h>
+#include <cryptopp/poly1305.h>
+#endif
 
 namespace Socks5 {
 enum version {
@@ -542,6 +549,109 @@ public:
 };
 
 #endif // OPENSSL_FOUND
+
+#ifdef CRYPTOPP_FOUND
+template <typename aead>
+class CryptoppAeadCipher : public AeadCipher {
+public:
+  CryptoppAeadCipher(size_t key_size, size_t salt_size, size_t nonce_size, size_t tag_size) :
+  AeadCipher(key_size, salt_size, nonce_size, tag_size) {}
+protected:
+  void aead_encrypt(uint8_t *ciphertext, size_t len_ciphertext,
+                    const uint8_t *message, size_t len_message,
+                    const uint8_t *ad, size_t len_ad,
+                    const uint8_t *nonce, const uint8_t *key) const {
+    using namespace CryptoPP;
+    typename aead::Encryption e;
+    e.SetKeyWithIV( key, key_size_, nonce, nonce_size_ );
+
+    std::string cipher;
+    AuthenticatedEncryptionFilter ef( e,
+                                      new StringSink( cipher ), false,
+                                      tag_size_ /* MAC_AT_END */
+    ); // AuthenticatedEncryptionFilter
+
+    // AuthenticatedEncryptionFilter::ChannelPut
+    //  defines two channels: DEFAULT_CHANNEL and AAD_CHANNEL
+    //   DEFAULT_CHANNEL is encrypted and authenticated
+    //   AAD_CHANNEL is authenticated
+    //ef.ChannelPut( AAD_CHANNEL, adata.data(), adata.size() );
+    ef.ChannelMessageEnd(AAD_CHANNEL);
+
+    // Authenticated data *must* be pushed before
+    //  Confidential/Authenticated data. Otherwise
+    //  we must catch the BadState exception
+    ef.ChannelPut( DEFAULT_CHANNEL, message, len_message );
+    ef.ChannelMessageEnd(DEFAULT_CHANNEL);
+    printf("en cipher size %zu , lenct %zu\n", cipher.size(), len_ciphertext);
+    memcpy(ciphertext, cipher.data(), len_ciphertext);
+  }
+
+  void aead_decrypt(uint8_t *message, size_t len_message,
+                     const uint8_t *ciphertext, size_t len_ciphertext,
+                     const uint8_t *ad, size_t len_ad,
+                     const uint8_t *nonce, const uint8_t *key) const {
+    using namespace CryptoPP;
+
+    typename aead::Decryption d;
+    d.SetKeyWithIV( key, key_size_, nonce, nonce_size_ );
+
+    // Object *will* throw an exception
+    //  during decryption\verification _if_
+    //  verification fails.
+    std::string plain;
+    AuthenticatedDecryptionFilter df(d,
+                                     new StringSink(plain),
+                                     AuthenticatedDecryptionFilter::DEFAULT_FLAGS,
+                                     tag_size_);
+
+    // The order of the following calls are important
+    df.ChannelPut( DEFAULT_CHANNEL, ciphertext, len_ciphertext );
+
+    // If the object throws, it will most likely occur
+    //   during ChannelMessageEnd()
+    df.ChannelMessageEnd( AAD_CHANNEL );
+    df.ChannelMessageEnd( DEFAULT_CHANNEL );
+
+    // If the object does not throw, here's the only
+    //  opportunity to check the data's integrity
+    bool result = df.GetLastResult();
+    // judge b true
+
+    printf("en plain size %zu , lenmsg %zu\n", plain.size(), len_message);
+    memcpy(message, plain.data(), len_message);
+    if (!result) {
+      memset(message, 0xcc, len_message);
+    }
+  }
+};
+
+typedef CryptoppAeadCipher<CryptoPP::GCM<CryptoPP::AES>> CryptoppAesGcmCipher;
+
+
+class CryptoppAes256GcmCipher : public CryptoppAesGcmCipher {
+public:
+  CryptoppAes256GcmCipher() : CryptoppAesGcmCipher(32, 32, 12, 16) {}
+};
+
+class CryptoppAes192GcmCipher : public CryptoppAesGcmCipher {
+public:
+  CryptoppAes192GcmCipher() : CryptoppAesGcmCipher(24, 24, 12, 16) {}
+};
+
+class CryptoppAes128GcmCipher : public CryptoppAesGcmCipher {
+public:
+  CryptoppAes128GcmCipher() : CryptoppAesGcmCipher(16, 16, 12, 16) {}
+};
+/*
+typedef CryptoppAeadCipher<CryptoPP::Poly1305<CryptoPP::ChaCha20>> CryptoppChacha20Poly1305BaseCipher;
+
+class CryptoppChacha20Poly1305Cipher : public CryptoppChacha20Poly1305BaseCipher {
+public:
+  CryptoppChacha20Poly1305Cipher() : CryptoppChacha20Poly1305BaseCipher(32, 32, 12, 16) {}
+};
+*/
+#endif // CRYPTOPP_FOUND
 
 } // namespace Shadowsocks
 #endif // SHADOWSOCKS_CRYPTO_H

@@ -94,6 +94,11 @@ std::unordered_map<std::string, AeadCipher *> aead_ciphers {
   {"openssl::aes-128-gcm",            &Singleton<OpensslAes128GcmCipher>::instance()},
 #endif
 
+#ifdef CRYPTOPP_FOUND
+  {"cryptopp::aes-256-gcm",            &Singleton<CryptoppAes256GcmCipher>::instance()},
+  {"cryptopp::aes-192-gcm",            &Singleton<CryptoppAes192GcmCipher>::instance()},
+  {"cryptopp::aes-128-gcm",            &Singleton<CryptoppAes128GcmCipher>::instance()},
+#endif
 }; // aead_ciphers
 
 void print_all_ciphers() {

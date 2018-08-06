@@ -26,18 +26,22 @@ endif()
 
 find_package(OpenSSL)
 include(packaging/Findsodium.cmake)
+include(packaging/FindCryptoPP.cmake)
 
 add_definitions("-DOPENSSL_FOUND=${OPENSSL_FOUND}")
 add_definitions("-DSODIUM_FOUND=${sodium_FOUND}")
+add_definitions("-DCRYPTOPP_FOUND=${CRYPTOPP_FOUND}")
 
 add_executable(shadowsocks ${SOURCE_FILES})
 
 include_directories(${Boost_INCLUDE_DIRS})
 include_directories(${OPENSSL_INCLUDE_DIR})
 include_directories(${sodium_INCLUDE_DIR})
+include_directories(${CRYPTOPP_INCLUDE_DIRS})
 
 target_link_libraries(shadowsocks ${Boost_LIBRARIES})
 target_link_libraries(shadowsocks ${CMAKE_THREAD_LIBS_INIT})
 target_link_libraries(shadowsocks ${OPENSSL_CRYPTO_LIBRARY})
+target_link_libraries(shadowsocks ${CRYPTOPP_LIBRARIES})
 target_link_libraries(shadowsocks debug ${sodium_LIBRARY_DEBUG})
 target_link_libraries(shadowsocks optimized ${sodium_LIBRARY_RELEASE})
